@@ -1,8 +1,8 @@
 {
-  "name": "gladys-integration-template-js",
-  "version": "1.0.0",
+  "name": "gladys-sma-ev-charger",
+  "version": "0.1.0",
   "private": true,
-  "description": "Official starter template to build an external integration for Gladys Assistant with the JavaScript SDK.",
+  "description": "Gladys Assistant external integration for SMA EV Charger and eCharger wall boxes (state, power, current and voltage per phase, energy index, session energy, charging mode and current; stop always available, optional start, mode and current), over their local web API. Unofficial, not affiliated with SMA.",
   "type": "module",
   "main": "index.js",
   "scripts": {
@@ -10,7 +10,9 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "node --test"
+    "test": "node --test --test-timeout=60000",
+    "audit": "npm audit --omit=dev",
+    "cover": "node scripts/cover.mjs cover.png"
   },
   "engines": {
     "node": ">=22"
