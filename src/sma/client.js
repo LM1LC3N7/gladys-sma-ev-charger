@@ -232,6 +232,18 @@ export function retryAfterOf(headers) {
   return Number.isNaN(at) || Number.isNaN(date) ? undefined : Math.max(0, at - date);
 }
 
+const OAUTH_REFUSALS = new Set(['invalid_grant', 'invalid_client', 'unauthorized_client']);
+
+/** Whether a token answer holds an OAuth error refusing the credentials (only `error` is read). */
+function oauthRefusal(response) {
+  try {
+    const error = own(JSON.parse(response.body), 'error');
+    return typeof error === 'string' && OAUTH_REFUSALS.has(error);
+  } catch {
+    return false;
+  }
+}
+
 /** The error of a non-2xx answer (the body is never kept). */
 function statusError(response, { token = false, write = false } = {}) {
   const status = response.status;
@@ -241,7 +253,9 @@ function statusError(response, { token = false, write = false } = {}) {
       retryAfter: retryAfterOf(response.headers),
     });
   }
-  if (token && (status === 400 || status === 401 || status === 403)) {
+  if (token && (status === 401 || ((status === 400 || status === 403) && oauthRefusal(response)))) {
+    // 401, or a 400/403 with an OAuth error about the credentials: refused.
+    // Another 400/403 (a proxy, a busy server) is an ordinary failure.
     return new ChargerError(ERROR_KINDS.AUTH, `HTTP ${status}`, { status });
   }
   if (!token && (status === 401 || status === 403)) {
@@ -301,7 +315,7 @@ export class SmaClient {
 
   /**
    * A new access token with the credentials (pysmaev's request_token with
-   * force_credentials): `{ token, lifeMs }`. The password leaves only once
+   * force_credentials): `{ token, lifeSeconds }`. The password leaves only once
    * the certificate matched (in `send`). The token is memory only.
    */
   async login(ctx, { username, password }) {

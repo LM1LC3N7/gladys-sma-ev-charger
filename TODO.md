@@ -90,12 +90,15 @@ up to date at the end of every milestone.
   access token (memory only) is used until 90 % of `expires_in` (1 min to
   24 h, 1 h without); a 401/403 with an old token gives one new token in the
   same session; with a token just given it is "no right" (status), never a
-  block. Token request answered 400/401/403: **block in /data, no automatic
+  block (that read waits 5 min, then doubling up to 1 h). Token request
+  answered 401, or 400/403 with an OAuth error (`invalid_grant`,
+  `invalid_client`, `unauthorized_client`, only `error` read; another
+  400/403 is an ordinary failure, review r1 I4): **block in /data, no automatic
   try** (stricter than gladys-alfen's 15 min / 1 h / 6 h: a charger may lock
   the account; lot rule "refus clair : aucun essai automatique"); lifted by
   new credentials (tried at once) or "Test the connection" (one try a
-  minute, never sooner than the interval); a stop during a block logs in at
-  most every 5 minutes after the last refusal. No hash of the password is
+  minute, never sooner than the interval); a stop clicked during a block
+  logs in at most once a minute after the last refusal, and is kept. No hash of the password is
   kept, so after a restart of the container the block stays until one of
   these.
 - **Reads**: token when needed, `measurements/live`, `parameters/search`,
@@ -139,17 +142,28 @@ up to date at the end of every milestone.
 - **Stop is protective** (no option, never held back): mode 4721 written in
   its own session, no read before (nothing "already so"), ignores the
   minute, a 429/5xx pause, a failed or hung read (the session under way is
-  given up), goes before the first read after a restart to the serial kept
-  in `/data` (any created device when none is kept), and with a `/data` that
-  cannot be written (the first pin aside). Not sent because unreachable: new
-  tries 250 ms apart within its 3.5 s, then kept in `/data` (`pendingStop`)
-  and sent before the next reads (its own session, whatever pauses the
-  reads), 3 tries within 15 minutes; a start that left since cancels it; a
-  date in the future in `/data` drops it. Watch of 90 s after a stop: a read
-  (poll or follow-up, never the read of a command) showing another mode while
-  no start left since sends it again, twice at most — until a read showed it
-  stopped, and afterwards only when a start of Gladys may still land (in
-  flight, overtaken, unconfirmed within 90 s, kept in `/data`).
+  given up, a TLS handshake under way included), goes before the first read
+  after a restart to the serial kept in `/data` (any created device when
+  none is kept), and with a `/data` that cannot be written (the first pin
+  aside). Not applied (unreachable: new tries 250 ms apart within its 3.5 s;
+  a 429 or 5xx answered to the token or to the write; a changed
+  certificate; refused credentials): kept in `/data` (`pendingStop`) and sent
+  again on its own timer every 30 s (after the Retry-After, 5 min at most),
+  whatever the interval, the backoff or a pause of the reads; **never
+  dropped by the time** (review r1, B1). It ends only when sent and taken
+  (2xx; a silence after the bytes left becomes the watch), when a read shows
+  4721, when a start leaves Gladys, when another mode than the one read
+  before the click is read twice in a row (never with that mode unknown),
+  with another charger or address, or on a 4xx of the write. With refused
+  credentials it is never sent with the same ones: new credentials or a
+  successful "Test the connection" send it first; a click of the stop tries
+  one login, at most once a minute like the button (review r1, B2). Watch of
+  90 s after a stop (kept in `/data`): a poll or follow-up read (never the
+  read of a command) showing another mode while no start left since sends it
+  again, twice at most — until a read showed it stopped (the read right
+  after the write counts: review r1, I2), and afterwards only when a start
+  of Gladys may still land (in flight, overtaken, unconfirmed within 90 s,
+  kept in `/data`).
 - **Start, mode, current** (`allow_commands`, off by default, only `true`
   allows): value validated strictly; the option checked on arrival and in
   `beforeSend` with the generation, the target, the pause, the block, the
@@ -161,7 +175,9 @@ up to date at the end of every milestone.
   kept in `/data` BEFORE the first byte (a failed save refuses; given back
   when nothing left or the charger refused). Ceiling: the lowest of
   `max_current` (16 A, 6–32 A), the `max` of `AcALim` and the rated current;
-  floor: the `min` of `AcALim`, never under 6 A.
+  floor: the `min` of `AcALim`, never under 6 A. A ceiling under 6 A (the
+  charger allows less now) refuses the current and the start, never 6 A
+  forced (review r1, m3).
 - **Outcomes**: sent by 3.5 s or refused unsent ("too slow", "a stop arrived
   meanwhile", "not sent"), answered by 4.3 s. 2xx then a read in the same
   session (400 ms left at least): the value asked → success; the value
@@ -195,5 +211,15 @@ up to date at the end of every milestone.
 - **One charger** per integration in v1 (pysmaev and Home Assistant take one
   host per entry): a scene on several chargers, a target in 5xx not stopping
   the others, do not apply.
+- **Review r1 fixes** (2026-10-28): B1, B2, I1, I2 and I4 above; I3: a test
+  for each guard the reviewer's mutants left alive (`test/app.test.js`, "Review
+  r1, I3"); m1 a TLS handshake under way is closed by a stop, which waits for
+  the socket to close; m2 a failed save of the minute says "/data cannot be
+  written"; m4 the doubling wait of 401/403 reads; m5 the ack of a kept stop
+  never waits for Gladys; m6 a stop that finds the charger unreachable shows
+  it offline at once; m7 the index ids of `/data` need a `:` (never
+  `__proto__`); m8 `test/kit` is gladys-testkit at commit f8f5301. Equivalent
+  mutant kept: the "already so" under a guard (`plan`), the read of a
+  command lifting the guard before the plan when it moved to the value asked.
 - **Demo files of the template** (`src/devices/*`, `scenes.js`, `widgets.js`,
   `weather.js` and their tests) deleted with `git rm`.

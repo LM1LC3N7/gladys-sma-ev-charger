@@ -70,12 +70,15 @@ right after new credentials or a certificate trusted by you, do).
   to 6 h (5 min without one), kept in `/data`; **5xx**: a pause of the
   failure delay (1 min at least). Nothing but "Stop charging" is sent during
   a pause.
-- **Refused credentials** (the token request answered 400, 401 or 403): kept
+- **Refused credentials** (the token request answered 401, or 400/403 with
+  an OAuth error such as `invalid_grant`; another 400/403, from a proxy or a
+  busy server, is an ordinary failure): kept
   in `/data`, and **no automatic try any more** (a charger may lock the
   account after a few refused passwords). Saving other credentials tries at
   once; **Test the connection** tries once more, at most once a minute.
 - A value the charger refuses to give with a token it has just given (401 or
-  403): the user lacks the rights; it is not a refused password.
+  403): the user lacks the rights; it is not a refused password. Tried again
+  after 5 minutes, then a wait that doubles up to 1 hour.
 - Unreachable: new tries after 30 s, 1, 2, then 5 min, never sooner than the
   interval.
 
@@ -94,16 +97,25 @@ written. It stays until a start (from Gladys with the option, from the SMA
 app, or with the rotary switch): **a forgotten stop may prevent the next
 charge**.
 
-When the charger cannot be reached, the stop is tried again within its
-time (250 ms apart), then kept in `/data` and sent again before the next
-reads, 3 times at most within 15 minutes (a start sent from Gladys meanwhile
-cancels it). After a stop, the reads of the next 90 seconds watch the
-charger: one that does not show "Charge stop" while no start left Gladys
-since sends the stop again, twice at most; once a read showed it stopped, a
-start seen afterwards (from the SMA app) is left alone, unless a start sent
-from Gladys just before the stop may still land.
+When the stop is not applied — the charger cannot be reached, answers 429
+or 5xx to it, its certificate changed, or the credentials are refused — it
+is **kept** in `/data` and sent again on its own rhythm, every 30 seconds
+(after the wait a 429 asks for, 5 minutes at most), whatever the interval or
+a pause of the reads, until the charger takes it. It is never dropped by the
+time; only a read showing the charger stopped, a start sent from Gladys, a
+mode other than the one before the click read twice in a row (a start from
+elsewhere), another charger at the address or the charger refusing the write
+(4xx) end it. With refused credentials it is not sent with the same ones: it
+goes first as soon as other credentials are saved or **Test the connection**
+succeeds (a click of the stop also tries one login, at most once a minute).
 
-The stop is refused only:
+After a stop, the reads of the next 90 seconds watch the charger: one that
+does not show "Charge stop" while no start left Gladys since sends the stop
+again, twice at most; once a read (the one right after the stop included)
+showed it stopped, a start seen afterwards (from the SMA app) is left alone,
+unless a start sent from Gladys just before the stop may still land.
+
+The stop is refused, and not kept, only:
 
 - when the configuration was never read from Gladys (it is asked again
   without end; after a reconnection, the configuration read before keeps
@@ -112,11 +124,6 @@ The stop is refused only:
 - when `/data` cannot be read (the pinned certificate is unknown);
 - for a device that is not the charger at the address (another charger read
   there);
-- when the certificate of the charger changed (see above), or when the first
-  certificate could not be kept in `/data` (the password is not sent);
-- less than 5 minutes after refused credentials (a refused password is never
-  sent again in a loop), or when the charger refuses the credentials;
-- when the configuration changed during the command;
 - when the charger refuses the write itself (HTTP 4xx: rights of the user).
 
 ### Start, mode and current (option)
@@ -129,7 +136,8 @@ starting, the mode and the current" in the configuration. Then:
   on that read, never on the values kept in memory; a value it needs that is
   missing refuses it;
 - "Start charging" sets boost charging; it is refused without a vehicle
-  plugged in, on a fault, a locked charger or an unknown state;
+  plugged in, on a fault, a locked charger or an unknown state, and when the
+  charger allows less than 6 A now;
 - "Optimized charging" is refused when the charger does not offer it (it
   needs an energy manager such as the Sunny Home Manager). Charging with a
   setpoint (an energy and an end time) is shown, not set;

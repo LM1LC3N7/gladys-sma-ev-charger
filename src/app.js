@@ -387,6 +387,9 @@ export class SmaApp {
     }
     await this.setStatus(false, this.status()[1]);
     await this.tick();
+    if (this.memory.pendingStop && !this.stopTimer) {
+      this.armStopTimer();
+    }
   }
 
   /**
@@ -459,6 +462,10 @@ export class SmaApp {
   halt() {
     this.generation += 1;
     this.clearTimer();
+    if (this.stopTimer) {
+      this.timers.clearTimeout(this.stopTimer);
+      this.stopTimer = undefined;
+    }
     this.clearFollowUps();
     if (this.session) {
       this.abortSession(this.session);
@@ -609,6 +616,10 @@ export class SmaApp {
       this.memory.block = null;
       await this.saveMemory();
       this.logger.info('SMA EV Charger: credentials accepted, block lifted');
+      if (this.memory.pendingStop) {
+        // The stop kept during the block goes first, now.
+        this.armStopTimer(0);
+      }
       if (!this.charger.running && this.readable) {
         this.schedule();
       }
@@ -674,7 +685,7 @@ export class SmaApp {
    * fixed for the whole session. Never while another one holds the charger.
    * `work(api, entry)`; `deadline` (monotonic) bounds every request.
    */
-  async openSession(kind, work, { deadline, generation = this.generation, stopLogin = false }) {
+  async openSession(kind, work, { deadline, generation = this.generation, clickLogin = false }) {
     if (this.busy) {
       throw this.refusal(ERRORS.stillRunning);
     }
@@ -728,11 +739,15 @@ export class SmaApp {
     };
     const login = async (by) => {
       check();
-      if (stopLogin && this.blocked()) {
-        // A stop during a block: one login every 5 minutes after the last refusal.
+      if (this.blocked()) {
+        // Refused credentials: a stop clicked (or the button) tries a login at
+        // most once a minute after the last refusal; nothing else logs in.
         const since = this.mono() - this.memory.block.refusedAt;
-        if (since < TIMINGS.blockedStopSpacing) {
-          throw this.refusal(ERRORS.blockedStop(age(TIMINGS.blockedStopSpacing - since)));
+        if (!clickLogin || since < TIMINGS.blockedTestSpacing) {
+          throw new ChargerError(ERROR_KINDS.AUTH, 'Credentials refused before', {
+            notSent: true,
+            spacing: true,
+          });
         }
       }
       const answer = await this.client.login(ctx(by), auth);
@@ -839,19 +854,12 @@ export class SmaApp {
     if (this.paused(mono)) {
       wait = Math.max(this.memory.pause.until - mono, this.interval);
     } else if (this.blocked()) {
-      if (!this.memory.pendingStop) {
-        // No automatic try with refused credentials.
-        return;
-      }
-      wait = this.interval;
+      // No automatic try with refused credentials.
+      return;
     } else {
       wait = delay ?? (c.online === false ? c.wait : this.interval);
     }
     wait = Math.max(wait ?? this.interval, this.readDue - mono);
-    if (this.memory.pendingStop) {
-      // A stop kept: sent again at the interval, whatever pauses the reads.
-      wait = Math.min(wait, this.interval);
-    }
     const generation = this.generation;
     c.timer = this.timers.setTimeout(
       () => {
@@ -923,6 +931,8 @@ export class SmaApp {
       const read = await this.openSession(SESSION.POLL, (api) => this.readAll(api), {
         deadline: startedAt + 4 * TIMINGS.readTimeout,
         generation,
+        // "Test the connection" during a block: the one login of a click.
+        clickLogin: manual,
       });
       if (generation !== this.generation) {
         return;
@@ -989,7 +999,9 @@ export class SmaApp {
     // before the first read after a restart goes only to this device.
     this.memory.serial = serial;
     c.measures = measures;
+    c.forbidden = 0;
     this.applyControl(control);
+    this.watchPendingStop(control);
   }
 
   /** fromCommand: the fresh read of a command (never sends a stop again: it would race it). */
@@ -1030,10 +1042,15 @@ export class SmaApp {
       this.logger.warn(`SMA EV Charger: ${reason}, pause`);
       return undefined;
     }
-    // Never read again sooner than the interval.
+    // Never read again sooner than the interval. No right to the values
+    // (401/403 with a token just given): the wait doubles up to 1 h.
+    const forbidden = err.kind === ERROR_KINDS.FORBIDDEN;
+    c.forbidden = forbidden ? (c.forbidden ?? 0) + 1 : 0;
     const wait = Math.max(
       this.interval,
-      TIMINGS.backoff[Math.min(c.failures, TIMINGS.backoff.length - 1)],
+      forbidden
+        ? TIMINGS.forbiddenBackoff[Math.min(c.forbidden - 1, TIMINGS.forbiddenBackoff.length - 1)]
+        : TIMINGS.backoff[Math.min(c.failures, TIMINGS.backoff.length - 1)],
     );
     c.failures += 1;
     c.wait = wait;
@@ -1078,12 +1095,21 @@ export class SmaApp {
     return this.memory.pause.reason === '5xx' ? T.serverError(wait) : T.rateLimited(wait);
   }
 
-  /** The highest current the commands accept now (whole amperes, never below 6 A). */
-  ceilingOf(control = this.charger.control) {
+  /**
+   * The highest current the charger and the configuration allow now, whole
+   * amperes (it may be under 6 A: the commands are then refused, never 6 A
+   * forced).
+   */
+  rawCeilingOf(control = this.charger.control) {
     const limits = [this.config?.maxCurrent ?? CURRENT.defaultCeiling];
     if (control?.limitMax !== undefined) limits.push(control.limitMax);
-    if (control?.rated !== undefined && control.rated >= CURRENT.min) limits.push(control.rated);
-    return Math.max(CURRENT.min, Math.floor(Math.min(...limits)));
+    if (control?.rated !== undefined) limits.push(control.rated);
+    return Math.floor(Math.min(...limits));
+  }
+
+  /** The highest current the select offers (never below 6 A: the command checks the real one). */
+  ceilingOf(control = this.charger.control) {
+    return Math.max(CURRENT.min, this.rawCeilingOf(control));
   }
 
   /** The lowest current the commands accept now (whole amperes, never below 6 A). */
@@ -1778,8 +1804,11 @@ export class SmaApp {
       if (control.currentLimit === undefined) {
         throw this.refusal(ERRORS.missing);
       }
-      const ceiling = this.ceilingOf(control);
+      const ceiling = this.rawCeilingOf(control);
       const floor = this.floorOf(control);
+      if (ceiling < CURRENT.min) {
+        throw this.refusal(ERRORS.belowMinimum(ceiling));
+      }
       if (wanted > ceiling || wanted < floor) {
         throw this.refusal(ERRORS.outOfBounds(floor, ceiling));
       }
@@ -1813,6 +1842,10 @@ export class SmaApp {
     }
     if (control.mode === undefined) {
       throw this.refusal(ERRORS.missing);
+    }
+    if (this.rawCeilingOf(control) < CURRENT.min) {
+      // The charger (or its rated current) allows less than 6 A: no charge started.
+      throw this.refusal(ERRORS.belowMinimum(this.rawCeilingOf(control)));
     }
     if (control.possibleModes && !control.possibleModes.includes(code)) {
       throw this.refusal(ERRORS.modeNotOffered(MODE_NAMES[code]));
@@ -1889,7 +1922,7 @@ export class SmaApp {
             entry.changeAt = this.memory.lastChangeAt;
             if (!(await this.saveMemory())) {
               this.memory.lastChangeAt = previousChange;
-              throw this.refusal(ERRORS.storage);
+              throw this.refusal(ERRORS.storageWrite);
             }
             await api.write(plan.channel, plan.value, {
               by: answerBy,
@@ -1907,7 +1940,7 @@ export class SmaApp {
                 }
                 if (
                   plan.channel === PARAMS.CURRENT_LIMIT &&
-                  Number(plan.value) > this.ceilingOf(control)
+                  Number(plan.value) > this.rawCeilingOf(control)
                 ) {
                   // The ceiling lowered meanwhile.
                   throw this.refusal(
@@ -1930,6 +1963,11 @@ export class SmaApp {
       // Nothing written (already so), or an answer of a configuration replaced since.
       if (entry.changeAt !== undefined && entry.sentAt === undefined) this.unspend(entry);
       return;
+    }
+    if (entry.isStop && this.memory.pendingStop?.serial === serial) {
+      // The stop applied (or watched by the reads): the one kept is done.
+      this.memory.pendingStop = null;
+      this.saveMemory().catch(() => {});
     }
     // Accepted by the charger: confirmed only by a read showing the value
     // asked. Otherwise the guard holds until a read shows it (5 s and 20 s
@@ -2022,7 +2060,7 @@ export class SmaApp {
               .then(async () => {
                 entry.outcome = await this.confirmRead(api, plan, answerBy);
               }),
-          { deadline: sendBy, generation, stopLogin: true },
+          { deadline: sendBy, generation, clickLogin: true },
         );
         return;
       } catch (err) {
@@ -2062,8 +2100,8 @@ export class SmaApp {
     if (entry.startLike) {
       c.lastStartAt = mono;
     }
-    if (entry.isStop || entry.startLike) {
-      // A stop that leaves replaces one kept; a start that leaves cancels it.
+    if (entry.startLike) {
+      // A start that leaves Gladys cancels a stop kept (a newer click).
       this.memory.pendingStop = null;
     }
     if (entry.startLike && this.memory.stopWatch) {
@@ -2083,76 +2121,212 @@ export class SmaApp {
     }
   }
 
-  /** Keeps a stop not sent in /data: sent again before the next reads (3 times within 15 min). */
-  async keepStop(serial) {
-    this.memory.pendingStop = { serial, at: this.mono(), tries: 0 };
-    await this.saveMemory();
-    this.logger.warn('SMA EV Charger: stop not sent, kept to be sent again');
-    if (!this.charger.running) this.schedule();
-    await this.updateStatus();
+  /**
+   * Keeps a stop not applied in /data: sent again on its own rhythm
+   * (TIMINGS.pendingStopRetry, after `wait` when the charger asked to wait),
+   * never dropped by the time. `err`: why it was not applied (an unreachable
+   * charger is shown offline at once).
+   */
+  keepStop(serial, err, { wait } = {}) {
+    const old = this.memory.pendingStop;
+    const mono = this.mono();
+    this.memory.pendingStop = {
+      serial,
+      // The click of the first stop still kept: a start that left after it cancels it.
+      at: old?.serial === serial ? old.at : mono,
+      from: old?.serial === serial ? old.from : (this.charger.control?.mode ?? null),
+      changedReads: 0,
+      notBefore: wait === undefined ? -Infinity : mono + wait,
+      sent: (old?.serial === serial ? old.sent : 0) + (err?.sentToCharger ? 1 : 0),
+    };
+    this.logger.warn(
+      `SMA EV Charger: stop not applied (${errorReason(err)}), kept to be sent again`,
+    );
+    if (
+      err &&
+      [ERROR_KINDS.UNREACHABLE, ERROR_KINDS.TIMEOUT, ERROR_KINDS.LATE].includes(err.kind) &&
+      this.charger.online !== false
+    ) {
+      // Nothing answered: the charger is shown offline now, not at the next read.
+      const c = this.charger;
+      c.online = false;
+      c.error = ERROR_KINDS.UNREACHABLE;
+      c.wait = c.wait ?? this.interval;
+    }
+    // Never waited for: the ack goes back to Gladys now.
+    this.saveMemory().catch(() => {});
+    this.armStopTimer(Math.max(TIMINGS.stopRetryGap, wait ?? TIMINGS.pendingStopRetry));
+    this.publishAll().catch(() => {});
+  }
+
+  /** The timer of the stop kept: its own rhythm, whatever the reads do. */
+  armStopTimer(delay = TIMINGS.pendingStopRetry) {
+    if (this.stopTimer) {
+      this.timers.clearTimeout(this.stopTimer);
+    }
+    const generation = this.generation;
+    this.stopTimer = this.timers.setTimeout(
+      () => {
+        this.stopTimer = undefined;
+        if (generation !== this.generation || !this.memory.pendingStop) return;
+        this.sendPendingStop(generation)
+          .catch(() => this.logger.error('SMA EV Charger: sending the stop kept failed'))
+          .finally(() => {
+            if (generation === this.generation && this.memory.pendingStop && !this.stopTimer) {
+              this.armStopTimer();
+            }
+          });
+      },
+      Math.max(0, delay),
+    );
   }
 
   /**
-   * The stop kept in /data, sent again before a read: dropped when too old,
-   * tried too often, cancelled by a start that left since, or meant for
-   * another charger. Its own session (no read), no option.
+   * A read of the charger seen by a stop kept: shown stopped, the stop is
+   * done; another mode than the one before the click, read twice in a row,
+   * is a start from elsewhere (never when the mode before was unknown).
+   */
+  watchPendingStop(control) {
+    const kept = this.memory.pendingStop;
+    if (!kept || control.mode === undefined || kept.serial !== this.charger.serial) {
+      return;
+    }
+    if (control.mode === MODES.STOP) {
+      this.memory.pendingStop = null;
+      this.logger.info('SMA EV Charger: the charger reads stopped, stop kept no longer needed');
+    } else if (kept.from !== null && control.mode !== kept.from) {
+      kept.changedReads += 1;
+      if (kept.changedReads >= 2) {
+        this.memory.pendingStop = null;
+        this.logger.info('SMA EV Charger: started elsewhere after the stop, stop kept dropped');
+      }
+    } else {
+      kept.changedReads = 0;
+    }
+  }
+
+  /**
+   * The stop kept in /data, sent again in its own session (no option, no
+   * read before): dropped only when another charger is read at the address
+   * or a start left Gladys since. Never with refused credentials (no
+   * automatic try: new credentials or the button send it at once).
    */
   async sendPendingStop(generation) {
     const kept = this.memory.pendingStop;
-    const mono = this.mono();
-    if (
-      mono - kept.at >= TIMINGS.pendingStopMax ||
-      kept.tries >= TIMINGS.pendingStopTries ||
-      this.charger.lastStartAt > kept.at ||
-      !this.isTarget(kept.serial, true)
-    ) {
+    if (!kept || !this.readable) {
+      return;
+    }
+    if (this.charger.lastStartAt > kept.at || !this.isTarget(kept.serial, true)) {
       this.memory.pendingStop = null;
       await this.saveMemory();
       return;
     }
-    if (this.blocked() && mono - this.memory.block.refusedAt < TIMINGS.blockedStopSpacing) {
-      // A refused password is never sent again in a loop: the next tick tries.
+    const mono = this.mono();
+    if (this.blocked() || this.session?.kind === SESSION.STOP) {
       return;
     }
-    kept.tries += 1;
-    await this.saveMemory();
+    if (mono < kept.notBefore) {
+      this.armStopTimer(kept.notBefore - mono);
+      return;
+    }
     const entry = { role: FEATURES.STOP, isStop: true, startLike: false, overtaken: undefined };
     const plan = this.plan(entry, undefined, kept.serial);
     entry.mayLand = this.startMayLand(entry, kept.serial);
+    const deadline = mono + 3 * TIMINGS.readTimeout;
     try {
+      await this.acquire(SESSION.STOP, deadline);
       await this.openSession(
         SESSION.STOP,
         (api) =>
-          api.write(plan.channel, plan.value, {
-            by: this.mono() + 2 * TIMINGS.readTimeout,
-            beforeSend: () => {
-              if (generation !== this.generation || !this.isTarget(kept.serial, true)) {
-                throw this.refusal(ERRORS.unknownCharger);
-              }
-              if (this.memory.pendingStop !== kept) {
-                // Replaced by a stop or cancelled by a start meanwhile.
-                throw this.refusal(ERRORS.stopMeanwhile);
-              }
-              this.markSent(entry);
-              this.logger.info('SMA EV Charger: stop kept, sent again');
-            },
-          }),
-        { deadline: this.mono() + 3 * TIMINGS.readTimeout, generation, stopLogin: true },
+          api
+            .write(plan.channel, plan.value, {
+              by: deadline,
+              beforeSend: () => {
+                if (generation !== this.generation || !this.isTarget(kept.serial, true)) {
+                  throw this.refusal(ERRORS.unknownCharger);
+                }
+                if (this.memory.pendingStop !== kept) {
+                  // Cancelled by a start, or replaced, meanwhile.
+                  throw this.refusal(ERRORS.stopMeanwhile);
+                }
+                this.markSent(entry);
+                this.logger.info('SMA EV Charger: stop kept, sent again');
+              },
+            })
+            .then(async () => {
+              entry.outcome = await this.confirmRead(api, plan, deadline);
+            }),
+        { deadline, generation, clickLogin: true },
       );
+      if (this.memory.pendingStop === kept) this.memory.pendingStop = null;
       this.guard(kept.serial, plan, entry);
       this.followUp();
-    } catch (err) {
-      if (generation !== this.generation) return;
-      if (entry.sentAt !== undefined && !notSent(err)) {
-        // It may have reached the charger: watched by the reads like any stop.
-        this.guard(kept.serial, plan, entry);
-        this.followUp();
-      }
-      if (err.kind === ERROR_KINDS.RATE_LIMITED) await this.rateLimited(err);
-      if (err.kind === ERROR_KINDS.AUTH) await this.authFailed();
-      this.logger.warn(`SMA EV Charger: stop kept, not sent again (${errorReason(err)})`);
       await this.saveMemory();
+      await this.publishAll();
+    } catch (err) {
+      if (generation !== this.generation || err?.refusal) return;
+      await this.stopFailed(err, { serial: kept.serial, entry, plan });
     }
+  }
+
+  /**
+   * What a stop that failed leaves behind, whether clicked or kept: kept
+   * again when it was not applied (not sent, a 429 or 5xx answered to it,
+   * refused credentials), watched when it may have reached the charger,
+   * dropped only when the charger refused it (4xx: rights) or another
+   * charger answers. Returns the refusal for the ack.
+   */
+  async stopFailed(err, { serial, entry, plan }) {
+    const reason = errorReason(err);
+    const sent = entry.sentAt !== undefined;
+    if (err.kind === ERROR_KINDS.OTHER_CHARGER) {
+      return this.refusal(ERRORS.otherCharger);
+    }
+    if (sent && (err.kind === ERROR_KINDS.REJECTED || err.kind === ERROR_KINDS.FORBIDDEN)) {
+      if (this.memory.pendingStop?.serial === serial) this.memory.pendingStop = null;
+      this.saveMemory().catch(() => {});
+      this.followUp();
+      return this.refusal(
+        err.kind === ERROR_KINDS.FORBIDDEN ? ERRORS.forbidden(reason) : ERRORS.refused(reason),
+      );
+    }
+    if (err.kind === ERROR_KINDS.AUTH) {
+      if (!err.spacing) {
+        if (this.memory.block) {
+          this.memory.block.refusedAt = this.mono();
+        } else {
+          await this.authFailed();
+        }
+      }
+      this.keepStop(serial, err);
+      return this.refusal(ERRORS.stopKeptCredentials);
+    }
+    const answered =
+      err.kind === ERROR_KINDS.RATE_LIMITED || (err.kind === ERROR_KINDS.HTTP && err.status >= 500);
+    if (err.kind === ERROR_KINDS.RATE_LIMITED) {
+      await this.rateLimited(err);
+    }
+    if (!sent || notSent(err) || answered) {
+      // Not applied: kept, sent again on its own rhythm (after the wait the
+      // charger asked for, bounded).
+      const wait = answered
+        ? Math.min(
+            TIMINGS.pendingStopWaitMax,
+            Math.max(TIMINGS.pendingStopRetry, err.retryAfter ?? TIMINGS.pendingStopRetry),
+          )
+        : undefined;
+      this.keepStop(serial, Object.assign(err, { sentToCharger: sent }), { wait });
+      if (err.kind === ERROR_KINDS.CERTIFICATE) return this.refusal(ERRORS.certificate);
+      if (err.kind === ERROR_KINDS.STORAGE) return this.refusal(ERRORS.storage);
+      return this.refusal(ERRORS.stopKept(reason));
+    }
+    // A silence, a cut connection after the write: it may have reached the
+    // charger. Watched by the reads (sent again when a read contradicts it).
+    if (this.memory.pendingStop?.serial === serial) this.memory.pendingStop = null;
+    this.guard(serial, plan, entry);
+    this.followUp();
+    this.saveMemory().catch(() => {});
+    return this.refusal(ERRORS.sentUnconfirmed(reason));
   }
 
   /**
@@ -2169,6 +2343,15 @@ export class SmaApp {
     }
     const reason = errorReason(err);
     const { isStop } = entry;
+    if (isStop) {
+      if (stale && err.kind === ERROR_KINDS.STALE) {
+        // The configuration changed under the stop: kept for the new one
+        // (a new address drops it, src/app.js ensureLoaded).
+        this.keepStop(serial, err);
+        return this.refusal(ERRORS.stopKept(reason));
+      }
+      return this.stopFailed(err, { serial, entry, plan });
+    }
     if (sent && (err.kind === ERROR_KINDS.REJECTED || err.kind === ERROR_KINDS.FORBIDDEN)) {
       // The charger answered the write itself with a refusal: not applied.
       this.unspend(entry);
@@ -2180,13 +2363,6 @@ export class SmaApp {
     if (!sent || notSent(err)) {
       // Nothing written (the minute between two changes is not spent).
       this.unspend(entry);
-      const keep = async () => {
-        if (isStop && !stale) {
-          await this.keepStop(serial);
-          return this.refusal(ERRORS.stopKept(reason));
-        }
-        return undefined;
-      };
       switch (err.kind) {
         case ERROR_KINDS.CERTIFICATE:
           return this.refusal(ERRORS.certificate);
@@ -2198,24 +2374,18 @@ export class SmaApp {
           return this.refusal(ERRORS.storage);
         case ERROR_KINDS.LATE:
           // Before the write, every request is bounded by the deadline of the command.
-          return (await keep()) ?? this.refusal(ERRORS.tooSlow);
+          return this.refusal(ERRORS.tooSlow);
         case ERROR_KINDS.TIMEOUT:
           // A read or the token request was silent: nothing was written.
-          return (await keep()) ?? this.refusal(ERRORS.tooSlow);
+          return this.refusal(ERRORS.tooSlow);
         case ERROR_KINDS.ABORTED:
           return this.refusal(stale ? ERRORS.configChanged : ERRORS.stopMeanwhile);
         case ERROR_KINDS.FORBIDDEN:
           // A read refused with a token just given: no right to it.
           return this.refusal(ERRORS.forbidden(reason));
         case ERROR_KINDS.AUTH:
-          if (!stale && this.config.auth) {
-            if (isStop && this.memory.block) {
-              // A stop during a block: its own spacing only, the reads keep theirs.
-              this.memory.block.refusedAt = this.mono();
-              await this.saveMemory();
-            } else {
-              await this.authFailed();
-            }
+          if (!stale && this.config.auth && !err.spacing) {
+            await this.authFailed();
             this.updateStatus().catch(() => {});
           }
           return this.refusal(ERRORS.credentialsRefused);
@@ -2224,19 +2394,16 @@ export class SmaApp {
             await this.rateLimited(err);
             this.updateStatus().catch(() => {});
           }
-          return (
-            (await keep()) ??
-            this.refusal(
-              ERRORS.rateLimitedNotSent(
-                age(Math.max(0, (this.memory.pause?.until ?? 0) - this.mono())),
-              ),
-            )
+          return this.refusal(
+            ERRORS.rateLimitedNotSent(
+              age(Math.max(0, (this.memory.pause?.until ?? 0) - this.mono())),
+            ),
           );
         default:
           if (!isStop && plan === undefined) {
             return this.refusal(ERRORS.unknownState(reason));
           }
-          return (await keep()) ?? this.refusal(ERRORS.notSent(reason));
+          return this.refusal(ERRORS.notSent(reason));
       }
     }
     this.logger.warn(`SMA EV Charger: ${entry.role} failed (${reason})`);
@@ -2309,7 +2476,8 @@ export class SmaApp {
       sentAt: entry?.sentAt ?? this.mono(),
       /** A start of Gladys may land after the stop: sent again even once seen stopped. */
       mayLand: Boolean(entry?.mayLand) || Boolean(keep && held.mayLand),
-      confirmed: false,
+      // A read right after the stop showed it stopped: a start seen afterwards came from elsewhere.
+      confirmed: Boolean(keep && held.confirmed) || (isStop && entry?.outcome === 'applied'),
       reasserts: keep ? held.reasserts : 0,
     };
     this.guards.set(key, guard);
@@ -2419,7 +2587,7 @@ export class SmaApp {
               this.charger.lastSentAt = this.mono();
             },
           }),
-        { deadline: this.mono() + 3 * TIMINGS.readTimeout, generation, stopLogin: true },
+        { deadline: this.mono() + 3 * TIMINGS.readTimeout, generation, clickLogin: true },
       );
     };
     send()

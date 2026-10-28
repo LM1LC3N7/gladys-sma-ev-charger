@@ -34,7 +34,14 @@ test('a round trip keeps every wait, bounded, as monotonic dates of the new life
     },
     lastReadAt: clock.mono - 5_000,
     lastChangeAt: clock.mono - 10_000,
-    pendingStop: { serial: '1234567890', at: clock.mono - 1_000, tries: 1 },
+    pendingStop: {
+      serial: '1234567890',
+      at: clock.mono - 1_000,
+      from: '4718',
+      changedReads: 1,
+      notBefore: -Infinity,
+      sent: 1,
+    },
   };
   const disk = toDisk(memory, clock);
   assert.equal(disk.pause.until, NOW + 10 * MINUTE);
@@ -53,7 +60,9 @@ test('a round trip keeps every wait, bounded, as monotonic dates of the new life
   assert.equal(soon.stopWatch.until, 50 + 70_000);
   assert.equal(soon.stopWatch.reasserts, 1);
   assert.equal(back.lastReadAt, 50 - 2 * MINUTE - 5_000);
-  assert.equal(back.pendingStop.tries, 1);
+  assert.equal(back.pendingStop.sent, 1);
+  assert.equal(back.pendingStop.from, '4718');
+  assert.equal(back.pendingStop.notBefore, -Infinity);
   assert.equal(back.pin, FP);
 });
 
@@ -65,7 +74,7 @@ test('dates in the future (a wall clock set back) are bounded; a stop clicked in
     lastReadAt: NOW + HOUR,
     lastChangeAt: NOW + HOUR,
     unconfirmedStartUntil: NOW + HOUR,
-    pendingStop: { serial: '1234567890', at: NOW + MINUTE, tries: 0 },
+    pendingStop: { serial: '1234567890', at: NOW + MINUTE, sent: 0 },
   };
   const m = fromDisk(disk, clock);
   assert.equal(m.pause.until, clock.mono + TIMINGS.rateLimitMax);

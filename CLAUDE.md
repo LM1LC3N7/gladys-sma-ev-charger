@@ -92,10 +92,13 @@ test/kit/                         parts of gladys-testkit: fake servers, clocks,
   `Parameter.Chrg.ActChaMod` (4718, 4719, 4721) and
   `Parameter.Inverter.AcALim` (6-32 A, whole) are ever written. "Stop
   charging" (mode 4721) needs no option and is never held back (in flight,
-  the minute, a 429/5xx pause, a failed read, before the first read; during
-  a block one login every 5 minutes); not sent, it is retried within its
-  budget, then kept in /data and sent again before the reads (3 times, 15
-  minutes); contradicted by a read within 90 s, sent again twice at most.
+  the minute, a 429/5xx pause, a failed read, before the first read); not
+  applied (unreachable, 429/5xx, refused credentials…), it is retried within
+  its budget, then kept in /data and sent again every 30 s on its own timer,
+  never dropped by the time (only a read showing it, a start of Gladys, a
+  change read twice elsewhere); with refused credentials it waits for new
+  ones or the button (a click: one login a minute); contradicted by a read
+  within 90 s, sent again twice at most.
   Start, the other modes and the current are behind `allow_commands` (off),
   decided on a read of the same session, checked again in `beforeSend`, one a
   minute (kept in /data before the first byte); a command is a success only

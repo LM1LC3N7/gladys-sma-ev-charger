@@ -222,10 +222,10 @@ export const TIMINGS = {
   rateLimitMin: MINUTE,
   rateLimitMax: 6 * HOUR,
   rateLimitDefault: 5 * MINUTE,
-  /** Credentials refused: "Test the connection" tries again at most this often. */
+  /** Credentials refused: "Test the connection" or a stop clicked try a login at most this often. */
   blockedTestSpacing: MINUTE,
-  /** During a block, a stop tries a login at most this often (a refused password never loops). */
-  blockedStopSpacing: 5 * MINUTE,
+  /** 401/403 on a read with a token just given: the wait doubles from 5 min up to 1 h. */
+  forbiddenBackoff: [5 * MINUTE, 10 * MINUTE, 20 * MINUTE, 40 * MINUTE, HOUR],
   /** The access token is used until 90 % of its life (pysmaev renews it then), 1 min .. 24 h. */
   tokenLifeMin: MINUTE,
   tokenLifeMax: 24 * HOUR,
@@ -254,9 +254,15 @@ export const TIMINGS = {
   commandMinSend: 300,
   /** A stop not sent (unreachable, cut) is tried again within its budget, this far apart. */
   stopRetryGap: 250,
-  /** A stop still not sent is kept (in /data) and sent again before the next reads, 3 times within 15 min. */
-  pendingStopTries: 3,
-  pendingStopMax: 15 * MINUTE,
+  /**
+   * A stop not applied is kept (in /data) and sent again on its own rhythm,
+   * whatever the interval, the backoff or a pause of the reads, until it is
+   * applied, a start leaves Gladys, a read shows it stopped or another mode
+   * twice in a row; never dropped by the time. A 429 or 5xx answered to it
+   * waits for its Retry-After, bounded.
+   */
+  pendingStopRetry: 30 * SECOND,
+  pendingStopWaitMax: 5 * MINUTE,
   /** Reads after a command, spaced: its effect, then a check. */
   followUps: [5 * SECOND, 20 * SECOND],
   /** A sent command keeps its guard until the charger shows what it asked, or 90 s. */

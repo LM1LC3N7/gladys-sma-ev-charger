@@ -268,10 +268,25 @@ export class AnswerParser {
  * byte the charger writes before a request is ever parsed.
  * @param {{ host: string, port: number, timeoutMs: number }} options
  */
-export function openConnection({ host, port, timeoutMs }) {
+export function openConnection({ host, port, timeoutMs, onSocket }) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let socket;
+    // Given up during the handshake (a stop): the socket destroyed at once.
+    onSocket?.(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const aborted = () =>
+        reject(new ChargerError(ERROR_KINDS.ABORTED, 'Session given up', { notSent: true }));
+      if (!socket || socket.destroyed) {
+        aborted();
+        return;
+      }
+      // Settled once the socket is really closed: the next connection opens after it.
+      socket.once('close', aborted);
+      socket.destroy();
+    });
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
@@ -441,10 +456,32 @@ export function connectionOn(socket, host, fingerprint) {
 export async function exchange({ host, port, timeoutMs, trust, onOpen, ...request }) {
   const started = performance.now();
   const left = () => timeoutMs - (performance.now() - started);
-  const connection = await openConnection({ host, port, timeoutMs: Math.max(1, left()) });
+  // The handle the app may close from the first moment (the TCP and TLS
+  // handshake included): never a second connection while one is still opening.
+  let abort;
+  const handle = {
+    closed: false,
+    close() {
+      if (handle.closed) return;
+      handle.closed = true;
+      abort?.();
+    },
+  };
+  onOpen?.(handle);
+  if (handle.closed) {
+    throw new ChargerError(ERROR_KINDS.ABORTED, 'Session given up', { notSent: true });
+  }
+  const connection = await openConnection({
+    host,
+    port,
+    timeoutMs: Math.max(1, left()),
+    onSocket: (fn) => {
+      abort = fn;
+    },
+  });
+  abort = () => connection.close();
   try {
-    onOpen?.(connection);
-    if (connection.closed) {
+    if (handle.closed || connection.closed) {
       throw new ChargerError(ERROR_KINDS.ABORTED, 'Session given up', { notSent: true });
     }
     await trust(connection.fingerprint);

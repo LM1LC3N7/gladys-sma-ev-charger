@@ -175,8 +175,8 @@ export const T = {
       `Plus lue : ${names} (une autre borne répond à cette adresse, ou elle a été retirée).`,
     ),
   pendingStop: both(
-    '"Stop charging" could not be sent yet: it is sent again before the next reads.',
-    "« Arrêter la charge » n'a pas encore pu être envoyée : elle est renvoyée avant les prochaines lectures.",
+    '"Stop charging" is not applied yet: it is kept and sent again every 30 seconds (after other credentials when they were refused).',
+    "« Arrêter la charge » n'est pas encore appliquée : elle est gardée et renvoyée toutes les 30 secondes (après d'autres identifiants s'ils ont été refusés).",
   ),
   held: (held) =>
     both(
@@ -328,11 +328,6 @@ export const ERRORS = {
     'The charger refused the credentials: commands are not sent until they are fixed ("Stop charging" is still tried).',
     "La borne a refusé les identifiants : les commandes ne sont pas envoyées tant qu'ils ne sont pas corrigés (« Arrêter la charge » est quand même tentée).",
   ),
-  blockedStop: (wait) =>
-    both(
-      `The charger refused the credentials less than 5 minutes ago: a refused password is never sent again in a loop, try again in ${wait.en}. Not sent.`,
-      `La borne a refusé les identifiants il y a moins de 5 minutes : un mot de passe refusé n'est jamais renvoyé en boucle, réessayez dans ${wait.fr}. Non envoyée.`,
-    ),
   stillRunning: both(
     `Another command of this charger is still running: not sent (${STOP_AVAILABLE.en}).`,
     `Une autre commande de cette borne est encore en cours : non envoyée (${STOP_AVAILABLE.fr}).`,
@@ -375,8 +370,21 @@ export const ERRORS = {
     ),
   stopKept: (reason) =>
     both(
-      `The charger could not be reached (${reason}): "Stop charging" not sent yet; it is kept and sent again before the next reads (3 tries within 15 minutes).`,
-      `La borne n'a pas pu être jointe (${reason}) : « Arrêter la charge » pas encore envoyée ; elle est gardée et renvoyée avant les prochaines lectures (3 essais en 15 minutes).`,
+      `"Stop charging" not applied yet (${reason}): it is kept and sent again every 30 seconds until the charger takes it.`,
+      `« Arrêter la charge » pas encore appliquée (${reason}) : elle est gardée et renvoyée toutes les 30 secondes jusqu'à ce que la borne la prenne.`,
+    ),
+  stopKeptCredentials: both(
+    '"Stop charging" not sent: the charger refused the credentials. It is kept and goes as soon as other credentials are saved or "Test the connection" succeeds.',
+    "« Arrêter la charge » non envoyée : la borne a refusé les identifiants. Elle est gardée et part dès que d'autres identifiants sont enregistrés ou que « Tester la connexion » réussit.",
+  ),
+  storageWrite: both(
+    '/data cannot be written: this change (one a minute, kept there) is not sent.',
+    "/data ne peut pas être écrit : ce changement (un par minute, gardé là) n'est pas envoyé.",
+  ),
+  belowMinimum: (amps) =>
+    both(
+      `The charger allows ${amps} A at most now, under the 6 A a vehicle needs: not sent.`,
+      `La borne n'autorise que ${amps} A au plus en ce moment, sous les 6 A dont un véhicule a besoin : non envoyée.`,
     ),
   refused: (reason) =>
     both(

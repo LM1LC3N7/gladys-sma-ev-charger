@@ -20,5 +20,7 @@ the notes of the version's GitHub Release.
   the charging current behind an option, off by default.
 - "Test the connection", "Accept the held index" and "Trust the new
   certificate" buttons.
+- A stop not applied (charger unreachable, 429 or 5xx, refused credentials)
+  is kept and sent again every 30 seconds until the charger takes it.
 
 [Unreleased]: https://github.com/LM1LC3N7/gladys-sma-ev-charger/commits/main

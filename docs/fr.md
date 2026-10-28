@@ -75,14 +75,17 @@ nouveaux identifiants ou un certificat que vous avez approuvé, le font).
   6 h (5 min sans), gardée dans `/data` ; **5xx** : une pause du délai
   d'échec (1 min au moins). Rien d'autre que « Arrêter la charge » n'est
   envoyé pendant une pause.
-- **Identifiants refusés** (la demande de jeton répond 400, 401 ou 403) :
+- **Identifiants refusés** (la demande de jeton répond 401, ou 400/403 avec
+  une erreur OAuth comme `invalid_grant` ; un autre 400/403, d'un proxy ou
+  d'un serveur occupé, est un échec ordinaire) :
   gardé dans `/data`, et **plus aucun essai automatique** (une borne peut
   verrouiller le compte après quelques mots de passe refusés). Enregistrer
   d'autres identifiants essaie aussitôt ; **Tester la connexion** essaie une
   fois de plus, au plus une fois par minute.
 - Une valeur que la borne refuse de donner avec un jeton qu'elle vient de
   donner (401 ou 403) : l'utilisateur n'a pas les droits ; ce n'est pas un
-  mot de passe refusé.
+  mot de passe refusé. Réessayé après 5 minutes, puis une attente qui double
+  jusqu'à 1 heure.
 - Injoignable : nouveaux essais après 30 s, 1, 2, puis 5 min, jamais plus
   tôt que l'intervalle.
 
@@ -102,18 +105,29 @@ de série de la borne est gardé dans `/data`), ni par un `/data` impossible à
 l'application SMA, ou par le sélecteur rotatif) : **un arrêt oublié peut
 empêcher la charge suivante**.
 
-Quand la borne ne peut pas être jointe, l'arrêt est réessayé dans son
-délai (à 250 ms d'écart), puis gardé dans `/data` et renvoyé avant les
-prochaines lectures, 3 fois au plus en 15 minutes (un démarrage envoyé
-depuis Gladys entre-temps l'annule). Après un arrêt, les lectures des 90
-secondes suivantes surveillent la borne : une lecture qui ne montre pas
-« Arrêt de la charge » alors qu'aucun démarrage n'est parti de Gladys depuis
-renvoie l'arrêt, deux fois au plus ; une fois qu'une lecture l'a montrée
+Quand l'arrêt n'est pas appliqué — la borne ne peut pas être jointe, lui
+répond 429 ou 5xx, son certificat a changé, ou les identifiants sont
+refusés — il est **gardé** dans `/data` et renvoyé à son propre rythme,
+toutes les 30 secondes (après l'attente qu'un 429 demande, 5 minutes au
+plus), quels que soient l'intervalle ou une pause des lectures, jusqu'à ce
+que la borne le prenne. Il n'est jamais abandonné avec le temps : seuls une
+lecture montrant la borne arrêtée, un démarrage envoyé depuis Gladys, un
+autre mode que celui d'avant le clic lu deux fois de suite (un démarrage
+venu d'ailleurs), une autre borne à l'adresse ou un refus de l'écriture par
+la borne (4xx) y mettent fin. Avec des identifiants refusés, il n'est pas
+envoyé avec les mêmes : il part en premier dès que d'autres identifiants
+sont enregistrés ou que **Tester la connexion** réussit (un clic sur l'arrêt
+tente aussi une connexion, au plus une fois par minute).
+
+Après un arrêt, les lectures des 90 secondes suivantes surveillent la
+borne : une lecture qui ne montre pas « Arrêt de la charge » alors qu'aucun
+démarrage n'est parti de Gladys depuis renvoie l'arrêt, deux fois au plus ;
+une fois qu'une lecture (celle juste après l'arrêt comprise) l'a montrée
 arrêtée, un démarrage vu ensuite (depuis l'application SMA) est laissé
 tranquille, sauf si un démarrage envoyé depuis Gladys juste avant l'arrêt
 peut encore arriver.
 
-L'arrêt est refusé seulement :
+L'arrêt est refusé, et non gardé, seulement :
 
 - quand la configuration n'a jamais été lue auprès de Gladys (elle est
   redemandée sans fin ; après une reconnexion, la configuration lue avant
@@ -122,13 +136,6 @@ L'arrêt est refusé seulement :
 - quand `/data` ne peut pas être lu (le certificat épinglé est inconnu) ;
 - pour un appareil qui n'est pas la borne à l'adresse (une autre borne y a
   été lue) ;
-- quand le certificat de la borne a changé (voir plus haut), ou quand le
-  premier certificat n'a pas pu être gardé dans `/data` (le mot de passe
-  n'est pas envoyé) ;
-- moins de 5 minutes après des identifiants refusés (un mot de passe refusé
-  n'est jamais renvoyé en boucle), ou quand la borne refuse les
-  identifiants ;
-- quand la configuration a changé pendant la commande ;
 - quand la borne refuse l'écriture elle-même (HTTP 4xx : droits de
   l'utilisateur).
 
@@ -143,7 +150,8 @@ configuration. Ensuite :
   sur cette lecture, jamais sur les valeurs gardées en mémoire ; une valeur
   dont elle a besoin qui manque la fait refuser ;
 - « Démarrer la charge » met la charge rapide ; elle est refusée sans
-  véhicule branché, sur un défaut, une borne verrouillée ou un état inconnu ;
+  véhicule branché, sur un défaut, une borne verrouillée ou un état inconnu,
+  et quand la borne autorise moins de 6 A en ce moment ;
 - « Charge optimisée » est refusée quand la borne ne la propose pas (elle
   demande un gestionnaire d'énergie comme le Sunny Home Manager). La charge
   avec consigne (une énergie et une heure de fin) est affichée, pas réglée ;

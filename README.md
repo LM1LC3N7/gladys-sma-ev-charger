@@ -11,8 +11,8 @@ affiliated with SMA. **Never tested with a real charger.**
   held is taken only by "Accept the held index", two clicks) and energy of
   the session.
 - **Stop charging** always available (no option, never held back by a
-  command, a pause or a failed read; kept and sent again when the charger
-  cannot be reached).
+  command, a pause or a failed read; kept and sent again every 30 s until the
+  charger takes it).
 - **Start charging**, the **charging mode** and the **charging current**
   only behind "Allow starting, the mode and the current" (off by default),
   decided on a fresh read, one change a minute, the current capped. Buttons

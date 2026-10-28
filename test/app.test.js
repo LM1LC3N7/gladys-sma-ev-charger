@@ -400,32 +400,72 @@ test('a stop arriving while a start reads: the start never leaves, the stop goes
   assert.deepEqual(sma.writes, [{ channelId: 'Parameter.Chrg.ActChaMod', value: '4721' }]);
 });
 
-test('a stop not sent (charger unreachable) is kept and sent again before the next reads', async (t) => {
-  const { gladys, sma, press, advance, app, store } = await setup(t);
+test('a stop not sent (charger unreachable) is kept and sent again on its own rhythm', async (t) => {
+  const { gladys, sma, press, advance, store } = await setup(t);
   sma.state.mode = '4718';
   sma.down = true;
   const ack = await press('stop-charge');
   assert.equal(ack.success, false);
-  assert.match(ack.error, /gardée et renvoyée/);
+  assert.match(ack.error, /gardée et renvoyée toutes les 30 secondes/);
   assert.ok(sma.connections.length > 4, 'tried again within its budget');
   assert.equal(store.data.pendingStop.serial, SERIAL);
-  assert.match(message(gladys).en, /sent again before the next reads/);
+  assert.match(message(gladys).en, /^No answer.*not applied yet: it is kept/);
   sma.down = false;
   sma.requests.length = 0;
-  await advance(app.interval);
+  await advance(30 * SECOND);
   assert.equal(sma.routes()[0], 'PUT /api/v1/parameters/IGULD:SELF');
   assert.equal(sma.state.mode, '4721');
   assert.equal(store.data.pendingStop, null);
 });
 
-test('a stop kept is tried 3 times at most', async (t) => {
-  const { sma, press, advance, app, store } = await setup(t);
+test('a stop kept is never dropped by the time, whatever the interval', async (t) => {
+  const { sma, press, advance, store } = await setup(t, {
+    config: { ...CONFIG, poll_interval: 3600 },
+  });
+  sma.state.mode = '4718';
   sma.down = true;
   await press('stop-charge');
-  sma.connections.length = 0;
-  await advance(10 * app.interval, 5 * SECOND);
+  await advance(3 * HOUR, MINUTE);
+  assert.equal(store.data.pendingStop.serial, SERIAL, 'still kept');
+  assert.equal(sma.writes.length, 0);
+  sma.down = false;
+  // Its own rhythm (30 s), not the interval (1 h).
+  await advance(MINUTE, 5 * SECOND);
+  assert.equal(sma.state.mode, '4721');
   assert.equal(store.data.pendingStop, null);
-  assert.ok(sma.connections.length >= 3);
+});
+
+test('a stop kept is dropped by a read showing another mode twice in a row (started elsewhere)', async (t) => {
+  const { sma, app, store } = await setup(t);
+  app.memory.pendingStop = {
+    serial: SERIAL,
+    at: app.mono(),
+    from: '4721',
+    changedReads: 0,
+    notBefore: Infinity,
+    sent: 0,
+  };
+  app.watchPendingStop({ mode: '4718' });
+  assert.ok(app.memory.pendingStop, 'one read is not enough');
+  app.watchPendingStop({ mode: '4721' });
+  assert.equal(app.memory.pendingStop, null, 'shown stopped: done');
+  app.memory.pendingStop = {
+    serial: SERIAL,
+    at: 0,
+    from: null,
+    changedReads: 0,
+    notBefore: 0,
+    sent: 0,
+  };
+  app.watchPendingStop({ mode: '4718' });
+  app.watchPendingStop({ mode: '4718' });
+  assert.ok(app.memory.pendingStop, 'a mode before unknown is never "changed elsewhere"');
+  app.memory.pendingStop.from = '4719';
+  app.watchPendingStop({ mode: '4718' });
+  app.watchPendingStop({ mode: '4718' });
+  assert.equal(app.memory.pendingStop, null);
+  assert.ok(store);
+  assert.ok(sma);
 });
 
 test('a stop contradicted by a read is sent again, twice at most', async (t) => {
@@ -481,20 +521,79 @@ test('a stop before the first read after a restart goes to the serial kept in /d
   assert.equal(again.sma.state.mode, '4721');
 });
 
-test('during a block, the stop tries one login every 5 minutes', async (t) => {
-  const { sma, press, advance, app } = await setup(t);
+test('during a block, a stop is kept and goes with the new credentials', async (t) => {
+  const { sma, press, advance, app, store } = await setup(t);
   sma.password = 'changed';
   sma.tokens.clear();
+  sma.state.mode = '4718';
   await advance(app.interval);
   sma.requests.length = 0;
+  // Within a minute of the refusal: no login, kept.
   let ack = await press('stop-charge');
   assert.equal(ack.success, false);
-  assert.match(ack.error, /moins de 5 minutes/);
+  assert.match(ack.error, /gardée et part dès que/);
   assert.equal(sma.requests.length, 0);
-  await advance(5 * MINUTE, 10 * SECOND);
-  sma.password = PASSWORD;
+  assert.equal(store.data.pendingStop.serial, SERIAL);
+  // No automatic try with the refused credentials.
+  await advance(10 * MINUTE, 10 * SECOND);
+  assert.equal(sma.requests.length, 0);
+  // A click a minute later logs in (as the button does): refused again, still kept.
   ack = await press('stop-charge');
+  assert.match(ack.error, /gardée et part dès que/);
+  assert.equal(sma.count('POST /api/v1/token'), 1);
+  assert.ok(store.data.pendingStop);
+  // New credentials: the stop goes first.
+  sma.password = 'new one';
+  sma.requests.length = 0;
+  await app.configUpdated({ ...CONFIG, password: 'new one' });
+  await advance(5 * SECOND);
+  assert.equal(sma.routes()[1], 'PUT /api/v1/parameters/IGULD:SELF');
+  assert.equal(sma.state.mode, '4721');
+  assert.equal(store.data.pendingStop, null);
+});
+
+test('during a block, the button that succeeds sends the stop kept at once', async (t) => {
+  const { gladys, sma, press, advance, app, store, clock } = await setup(t);
+  sma.password = 'changed';
+  sma.tokens.clear();
+  sma.state.mode = '4718';
+  await advance(app.interval);
+  await press('stop-charge');
+  assert.ok(store.data.pendingStop);
+  await clock.advance(MINUTE);
+  sma.password = PASSWORD;
+  await gladys.fake.action(ACTIONS.TEST_CONNECTION);
+  await advance(2 * SECOND, 100);
+  assert.equal(sma.state.mode, '4721');
+  assert.equal(store.data.pendingStop, null);
+});
+
+test('a stop whose write gets a 429 is kept and sent after the wait asked', async (t) => {
+  const { sma, press, advance, store } = await setup(t);
+  sma.state.mode = '4718';
+  let refusals = 1;
+  sma.hooks['PUT /api/v1/parameters/IGULD:SELF'] = () =>
+    refusals-- > 0 ? { status: 429, body: '', headers: { 'retry-after': '120' } } : undefined;
+  const ack = await press('stop-charge');
+  assert.equal(ack.success, false);
+  assert.match(ack.error, /gardée/);
+  assert.ok(store.data.pendingStop);
+  await advance(MINUTE, 5 * SECOND);
+  assert.equal(sma.state.mode, '4718', 'waits for the Retry-After');
+  await advance(2 * MINUTE, 5 * SECOND);
+  assert.equal(sma.state.mode, '4721');
+  assert.equal(store.data.pendingStop, null);
+});
+
+test('a stop read back stopped, then a start from the SMA app 2 s later: left alone', async (t) => {
+  const { sma, press, advance } = await setup(t);
+  sma.state.mode = '4718';
+  const ack = await press('stop-charge', 1, 2 * SECOND);
   assert.equal(ack.success, true, ack.error);
+  sma.state.mode = '4718';
+  await advance(30 * SECOND);
+  assert.equal(sma.count('PUT /api/v1/parameters/IGULD:SELF'), 1);
+  assert.equal(sma.state.mode, '4718');
 });
 
 test('a wall clock set forward or back by hours changes no decision', async (t) => {
@@ -703,9 +802,11 @@ test('with refused credentials, no tick reads the charger by itself', async (t) 
   sma.tokens.clear();
   await advance(app.interval);
   sma.requests.length = 0;
+  const failures = app.memory.block.failures;
   await advance(app.interval);
   await app.tick();
   assert.equal(sma.requests.length, 0);
+  assert.equal(app.memory.block.failures, failures, 'no try counted either');
 });
 
 test('a 403 with a token just given asks no second token', async (t) => {
@@ -757,4 +858,205 @@ test('the energy guard does not follow a wall clock moved forward', async (t) =>
   sma.state.meterWh += 100_000;
   await advance(app.interval);
   assert.equal(last(gladys, 'energy-index'), 875.891);
+});
+
+// --- Review r1, I3: one test per guard -------------------------------------------
+
+/** A store whose saves take `delay` ms on the test clock. */
+function slowStore(clock, delay) {
+  const store = memoryStore();
+  const save = store.save.bind(store);
+  store.save = (data) =>
+    store.slow
+      ? new Promise((resolve) => clock.timers.setTimeout(resolve, delay)).then(() => save(data))
+      : save(data);
+  return store;
+}
+
+test('a stop kept goes during a 429 pause of the reads', async (t) => {
+  const { sma, app, advance, store } = await setup(t);
+  sma.state.mode = '4718';
+  app.memory.pause = { until: app.mono() + 6 * HOUR, reason: '429' };
+  app.keepStop(SERIAL, undefined);
+  await advance(MINUTE, 5 * SECOND);
+  assert.equal(sma.state.mode, '4721');
+  assert.equal(store.data.pendingStop, null);
+});
+
+test('the read of a command never sends a stop again', async (t) => {
+  const { sma, press, advance } = await setup(t, { config: ALLOWED });
+  sma.state.mode = '4718';
+  sma.hooks['PUT /api/v1/parameters/IGULD:SELF'] = () => ({ status: 204, body: '' });
+  await press('stop-charge', 1, 1 * SECOND);
+  delete sma.hooks['PUT /api/v1/parameters/IGULD:SELF'];
+  const puts = () =>
+    sma.requests.filter((r) => r.method === 'PUT').map((r) => JSON.parse(r.body).values[0].value);
+  assert.deepEqual(puts(), ['4721']);
+  // The fresh read of the current command shows boost charging: not a reason to stop again.
+  await press('set-current', '10', 1 * SECOND);
+  assert.deepEqual(puts(), ['4721', '10']);
+  await advance(SECOND);
+});
+
+test('a stop sent again marks the time a write left (older reads quarantined)', async (t) => {
+  const { app, advance } = await setup(t);
+  const before = app.charger.lastSentAt;
+  app.reassertStop(SERIAL);
+  await advance(SECOND, 100);
+  assert.ok(app.charger.lastSentAt > before);
+});
+
+test('a read begun before a write left is never applied (fresh read of a command)', async (t) => {
+  const { app } = await setup(t);
+  const readStart = app.mono();
+  app.charger.lastSentAt = app.mono();
+  const measures = { ...app.charger.measures, power: 9999 };
+  app.applyFresh({ measures, control: app.charger.control }, readStart);
+  assert.notEqual(app.charger.measures.power, 9999);
+});
+
+test('before the first read after a restart, a stop for another serial is refused', async (t) => {
+  const store = memoryStore();
+  const first = await setup(t, { store });
+  first.app.halt();
+  first.sma.down = true;
+  const own = first.gladys.fake.devices[0];
+  const other = JSON.parse(JSON.stringify(own).replaceAll(SERIAL, '9999999999'));
+  const again = await setup(t, {
+    store,
+    sma: first.sma,
+    clock: first.clock,
+    devices: [own, other],
+  });
+  first.sma.connections.length = 0;
+  await assert.rejects(
+    again.app.setValue(
+      other,
+      other.features.find((f) => f.external_id.endsWith(':stop-charge')),
+      1,
+    ),
+    /n'est pas lue/,
+  );
+  assert.equal(first.sma.connections.length, 0);
+});
+
+test('a current above the ceiling known is refused without a request; above 32 A, the bound says 32', async (t) => {
+  const { sma, press } = await setup(t, { config: ALLOWED });
+  sma.requests.length = 0;
+  let ack = await press('set-current', '20');
+  assert.match(ack.error, /entre 6 et 16 A/);
+  assert.equal(sma.requests.length, 0);
+  ack = await press('set-current', '40');
+  assert.match(ack.error, /entre 6 et 32 A/);
+});
+
+test('a command whose reads and save end after 3.5 s is never written', async (t) => {
+  const clock = (await import('./kit/index.mjs')).testClock({ start: Date.UTC(2026, 9, 28) });
+  const store = slowStore(clock, 600);
+  const { sma, press } = await setup(t, { config: ALLOWED, clock, store });
+  sma.delay['POST /api/v1/parameters/search'] = 3_000;
+  store.slow = true;
+  const ack = await press('start-charge');
+  assert.equal(ack.success, false);
+  assert.match(ack.error, /trop lentement/);
+  assert.equal(sma.writes.length, 0);
+});
+
+test('a ceiling lowered while a current command waits: refused right before sending', async (t) => {
+  const clock = (await import('./kit/index.mjs')).testClock({ start: Date.UTC(2026, 9, 28) });
+  const store = slowStore(clock, 500);
+  const { sma, send, advance, app } = await setup(t, { config: ALLOWED, clock, store });
+  store.slow = true;
+  const ack = send('set-current', '12');
+  await advance(200, 50);
+  await app.configUpdated({ ...ALLOWED, max_current: 8 });
+  await advance(5 * SECOND, 50);
+  const result = await ack;
+  assert.equal(result.success, false);
+  assert.match(result.error, /entre 6 et 8 A/);
+  assert.equal(sma.writes.length, 0);
+});
+
+test('the rated current of the charger caps the current; under 6 A nothing is sent', async (t) => {
+  const { sma, press } = await setup(t, { config: { ...ALLOWED, max_current: 32 } });
+  sma.state.rated = '10.000';
+  let ack = await press('set-current', '12');
+  assert.match(ack.error, /entre 6 et 10 A/);
+  sma.state.limitMax = 5;
+  ack = await press('set-current', '6');
+  assert.match(ack.error, /sous les 6 A/);
+  ack = await press('start-charge');
+  assert.match(ack.error, /sous les 6 A/);
+  assert.equal(sma.writes.length, 0);
+});
+
+test('a mode on a charger in fault or locked is refused', async (t) => {
+  const { sma, press } = await setup(t, { config: ALLOWED });
+  sma.state.session = 200115;
+  let ack = await press('set-mode', 'boost');
+  assert.match(ack.error, /Défaut de la borne/);
+  sma.state.session = 5169;
+  ack = await press('set-mode', 'boost');
+  assert.match(ack.error, /verrouillée/);
+  assert.equal(sma.writes.length, 0);
+});
+
+test('a command during a 429 pause reads nothing', async (t) => {
+  const { sma, press, app } = await setup(t, { config: ALLOWED });
+  app.memory.pause = { until: app.mono() + HOUR, reason: '429' };
+  sma.requests.length = 0;
+  const ack = await press('start-charge');
+  assert.match(ack.error, /ralentir/);
+  assert.equal(sma.requests.length, 0);
+});
+
+test('two clicks of "Accept the held index" less than 3 s apart accept nothing', async (t) => {
+  const { gladys, sma, app, advance, clock } = await setup(t);
+  sma.state.meterWh = 1_000;
+  await advance(app.interval);
+  await gladys.fake.action(ACTIONS.ACCEPT_HELD);
+  await clock.advance(1_000);
+  const second = await gladys.fake.action(ACTIONS.ACCEPT_HELD);
+  assert.match(second.data.message.en, /Click again/);
+  assert.equal(last(gladys, 'energy-index'), 875.891);
+});
+
+test('"Trust the new certificate" never pins a fingerprint that was not shown', async (t) => {
+  const { gladys, sma, app, advance, store, clock } = await setup(t);
+  sma.fingerprint = OTHER_FP;
+  await advance(app.interval);
+  await gladys.fake.action(ACTIONS.TRUST_CERTIFICATE);
+  // Another certificate seen meanwhile.
+  const third = FP.replace(/^../, 'EE');
+  sma.fingerprint = third;
+  await advance(app.interval);
+  assert.equal(store.data.refusedPin, third);
+  await clock.advance(5 * SECOND);
+  const second = await gladys.fake.action(ACTIONS.TRUST_CERTIFICATE);
+  assert.match(second.data.message.en, /click again/);
+  assert.equal(store.data.pin, FP);
+});
+
+test('a 403 from the token endpoint without an OAuth error is not a refusal', async (t) => {
+  const { gladys, sma, app, advance, store } = await setup(t);
+  sma.tokens.clear();
+  app.token = undefined;
+  sma.hooks['POST /api/v1/token'] = () => ({ status: 403, body: '<html>busy</html>' });
+  await advance(app.interval);
+  assert.equal(store.data.block, null);
+  assert.doesNotMatch(message(gladys).en, /refused the user name/);
+  sma.hooks['POST /api/v1/token'] = () => ({ status: 400, body: '{"error":"invalid_grant"}' });
+  await advance(5 * MINUTE, 10 * SECOND);
+  assert.ok(store.data.block);
+});
+
+test('401/403 on the reads with a token just given: the wait doubles up to 1 h', async (t) => {
+  const { sma, app, advance } = await setup(t);
+  sma.hooks['POST /api/v1/measurements/live'] = () => ({ status: 403, body: '' });
+  sma.tokens.clear();
+  app.token = undefined;
+  sma.requests.length = 0;
+  await advance(2 * HOUR, MINUTE);
+  // 5, 10, 20, 40 min, then 1 h: at most 6 logins in 2 h.
+  assert.ok(sma.count('POST /api/v1/token') <= 6, String(sma.count('POST /api/v1/token')));
 });

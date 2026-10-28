@@ -210,3 +210,29 @@ test('the answer parser: chunked, interim answers, bounded head', () => {
     /Head too large/,
   );
 });
+
+test('an answer without a length is bounded too (read until the close)', async (t) => {
+  const tls = await import('node:tls');
+  const server = tls.createServer({ key: certs.device.key, cert: certs.device.cert }, (socket) => {
+    socket.on('data', () => {
+      socket.write('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n');
+      socket.write(Buffer.alloc(200 * 1024, 0x20));
+      socket.end();
+    });
+    socket.on('error', () => {});
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await assert.rejects(
+    exchange({
+      host: '127.0.0.1',
+      port: server.address().port,
+      timeoutMs: 3_000,
+      trust: pinned(),
+      method: 'POST',
+      path: '/api/v1/parameters/search',
+      body: '{}',
+    }),
+    (err) => err.kind === ERROR_KINDS.PROTOCOL && /too large/.test(err.message),
+  );
+});

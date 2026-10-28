@@ -80,7 +80,7 @@ export function memoryStore(initial = null) {
 }
 
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-const FEATURE_ID = /^[a-z0-9:_-]{1,200}$/;
+const FEATURE_ID = /^[a-z0-9_-]{1,60}(?::[a-z0-9_-]{1,60}){1,6}$/;
 const SERIAL = /^[0-9a-z](?:[0-9a-z_-]{2,38}[0-9a-z])$/;
 const TARGET = /^[a-z0-9.-]{1,253}(?::\d{1,5})?$/;
 const finite = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -127,7 +127,10 @@ export function toDisk(memory, { mono, now, session }) {
       ? {
           serial: memory.pendingStop.serial,
           at: wall(memory.pendingStop.at),
-          tries: memory.pendingStop.tries,
+          from: memory.pendingStop.from,
+          changedReads: memory.pendingStop.changedReads,
+          notBefore: wall(memory.pendingStop.notBefore),
+          sent: memory.pendingStop.sent,
         }
       : null,
     stopWatch: memory.stopWatch
@@ -196,19 +199,26 @@ export function fromDisk(raw, { mono, now, session }) {
   memory.lastChangeAt = past(data.lastChangeAt);
   memory.unconfirmedStartUntil = ahead(data.unconfirmedStartUntil, TIMINGS.guard);
   const stop = plain(data.pendingStop) ? data.pendingStop : undefined;
-  // A stop clicked "in the future" (a wall clock set back) is not valid: dropped.
+  // A stop clicked "in the future" (a wall clock set back) is not valid:
+  // dropped. Never dropped for its age: only a read, a newer click or a
+  // change read twice elsewhere lift it (src/app.js).
+  const count = (v) => (Number.isInteger(v) && v >= 0 ? Math.min(v, 1000) : 0);
   if (
     stop &&
     typeof stop.serial === 'string' &&
     SERIAL.test(stop.serial) &&
     finite(stop.at) &&
-    stop.at <= now &&
-    now - stop.at < TIMINGS.pendingStopMax &&
-    Number.isInteger(stop.tries) &&
-    stop.tries >= 0 &&
-    stop.tries < TIMINGS.pendingStopTries
+    stop.at <= now
   ) {
-    memory.pendingStop = { serial: stop.serial, at: past(stop.at), tries: stop.tries };
+    memory.pendingStop = {
+      serial: stop.serial,
+      at: past(stop.at),
+      /** The mode read before the click (null: unknown, never "changed elsewhere"). */
+      from: typeof stop.from === 'string' && /^\d{1,8}$/.test(stop.from) ? stop.from : null,
+      changedReads: Math.min(count(stop.changedReads), 1),
+      notBefore: ahead(stop.notBefore, TIMINGS.pendingStopWaitMax),
+      sent: count(stop.sent),
+    };
   }
   const watch = plain(data.stopWatch) ? data.stopWatch : undefined;
   if (
