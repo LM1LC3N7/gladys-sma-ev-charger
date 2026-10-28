@@ -152,9 +152,14 @@ up to date at the end of every milestone.
   whatever the interval, the backoff or a pause of the reads; **never
   dropped by the time** (review r1, B1). It ends only when sent and taken
   (2xx; a silence after the bytes left becomes the watch), when a read shows
-  4721, when a start leaves Gladys, when another mode than the one read
-  before the click is read twice in a row (never with that mode unknown),
-  with another charger or address, or on a 4xx of the write. With refused
+  4721, when a start leaves Gladys, with another charger or address (another
+  mode read twice no longer ends it: the stop never applied, nothing was
+  started again; a reboot into the rotary switch mode changes the mode too,
+  review r2 s15) (review r2, I1: a 4xx of the write no
+  longer ends it: 401/403 with a token just given waits for other
+  credentials or a successful "Test the connection"; another 4xx is sent
+  again every 5 min, given up after 3 identical refusals in a row, said in
+  the status and the badge until a read shows 4721 or a click). With refused
   credentials it is never sent with the same ones: new credentials or a
   successful "Test the connection" send it first; a click of the stop tries
   one login, at most once a minute like the button (review r1, B2). Watch of
@@ -219,7 +224,13 @@ up to date at the end of every milestone.
   never waits for Gladys; m6 a stop that finds the charger unreachable shows
   it offline at once; m7 the index ids of `/data` need a `:` (never
   `__proto__`); m8 `test/kit` is gladys-testkit at commit f8f5301. Equivalent
-  mutant kept: the "already so" under a guard (`plan`), the read of a
-  command lifting the guard before the plan when it moved to the value asked.
+  mutants: those the reviewer confirmed (r2).
+- **Review r2 fixes** (2026-10-28): I1 above; I2 a test for each guard left
+  alive (the "already so" under a live guard is NOT equivalent: a command is
+  written while a guard of its kind lives, test "under a live guard"); m9 the
+  ack of a stop kept for a changed certificate or an unwritable first pin
+  says it is kept and when it goes; m10 a block lifted clears the old reason;
+  the index guard takes the approved fix of gladys-span-panel (an accepted
+  drop is a floor both ways, its margin restarted under the floor).
 - **Demo files of the template** (`src/devices/*`, `scenes.js`, `widgets.js`,
   `weather.js` and their tests) deleted with `git rm`.

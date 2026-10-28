@@ -435,37 +435,22 @@ test('a stop kept is never dropped by the time, whatever the interval', async (t
   assert.equal(store.data.pendingStop, null);
 });
 
-test('a stop kept is dropped by a read showing another mode twice in a row (started elsewhere)', async (t) => {
-  const { sma, app, store } = await setup(t);
+test('a stop kept is ended by a read showing it stopped, never by another mode read', async (t) => {
+  const { app } = await setup(t);
   app.memory.pendingStop = {
     serial: SERIAL,
     at: app.mono(),
-    from: '4721',
+    from: '4719',
     changedReads: 0,
     notBefore: Infinity,
     sent: 0,
+    rights: false,
+    refusal: null,
   };
-  app.watchPendingStop({ mode: '4718' });
-  assert.ok(app.memory.pendingStop, 'one read is not enough');
+  for (let i = 0; i < 3; i += 1) app.watchPendingStop({ mode: '4718' });
+  assert.ok(app.memory.pendingStop, 'a reboot into another mode is no start from elsewhere');
   app.watchPendingStop({ mode: '4721' });
   assert.equal(app.memory.pendingStop, null, 'shown stopped: done');
-  app.memory.pendingStop = {
-    serial: SERIAL,
-    at: 0,
-    from: null,
-    changedReads: 0,
-    notBefore: 0,
-    sent: 0,
-  };
-  app.watchPendingStop({ mode: '4718' });
-  app.watchPendingStop({ mode: '4718' });
-  assert.ok(app.memory.pendingStop, 'a mode before unknown is never "changed elsewhere"');
-  app.memory.pendingStop.from = '4719';
-  app.watchPendingStop({ mode: '4718' });
-  app.watchPendingStop({ mode: '4718' });
-  assert.equal(app.memory.pendingStop, null);
-  assert.ok(store);
-  assert.ok(sma);
 });
 
 test('a stop contradicted by a read is sent again, twice at most', async (t) => {
@@ -1059,4 +1044,220 @@ test('401/403 on the reads with a token just given: the wait doubles up to 1 h',
   await advance(2 * HOUR, MINUTE);
   // 5, 10, 20, 40 min, then 1 h: at most 6 logins in 2 h.
   assert.ok(sma.count('POST /api/v1/token') <= 6, String(sma.count('POST /api/v1/token')));
+});
+
+test('an accepted drop is a floor: a lower value later is held again', async (t) => {
+  const { gladys, sma, app, advance, clock } = await setup(t);
+  sma.state.meterWh = 12_000;
+  await advance(app.interval);
+  await gladys.fake.action(ACTIONS.ACCEPT_HELD);
+  await clock.advance(4 * SECOND);
+  await gladys.fake.action(ACTIONS.ACCEPT_HELD);
+  assert.equal(last(gladys, 'energy-index'), 12);
+  sma.state.meterWh = 5_000;
+  await advance(app.interval);
+  assert.ok(
+    !gladys.fake.states.some(
+      (s) => s.device_feature_external_id === feature('energy-index') && s.state === 5,
+    ),
+    'never 5 kWh without a click',
+  );
+  assert.equal(app.currentHold().to, 5);
+  // The value accepted comes back: it follows, from the floor accepted.
+  sma.state.meterWh = 12_100;
+  await advance(app.interval);
+  assert.equal(last(gladys, 'energy-index'), 12.1);
+  assert.equal(app.currentHold(), undefined);
+});
+
+// --- Review r2 ----------------------------------------------------------------------
+
+/** The PUT answered `status` the next `n` times, then normally. */
+const refuseWrites = (sma, status, n = 1) => {
+  sma.hooks['PUT /api/v1/parameters/IGULD:SELF'] = () =>
+    n-- > 0 ? { status, body: '' } : undefined;
+};
+
+test('a stop kept answered 409 once is kept and sent again 5 minutes later', async (t) => {
+  const { gladys, sma, press, advance, store, app } = await setup(t);
+  sma.state.mode = '4718';
+  await advance(app.interval);
+  sma.down = true;
+  await press('stop-charge');
+  refuseWrites(sma, 409);
+  sma.down = false;
+  await advance(MINUTE, 5 * SECOND);
+  assert.equal(sma.state.mode, '4718');
+  assert.deepEqual(store.data.pendingStop.refusal, { status: 409, count: 1 });
+  assert.match(message(gladys).en, /refused by the charger \(HTTP 409\): it is kept/);
+  await advance(5 * MINUTE, 10 * SECOND);
+  assert.equal(sma.state.mode, '4721');
+  assert.equal(store.data.pendingStop, null);
+});
+
+test('a clicked stop answered 400 is kept; given up after 3 identical refusals, said until a click', async (t) => {
+  const { gladys, sma, press, advance, store, app } = await setup(t);
+  sma.state.mode = '4718';
+  await advance(app.interval);
+  refuseWrites(sma, 400, 3);
+  const ack = await press('stop-charge');
+  assert.match(ack.error, /gardée et renvoyée toutes les 5 minutes/);
+  assert.ok(store.data.pendingStop);
+  await advance(11 * MINUTE, 10 * SECOND);
+  assert.equal(store.data.pendingStop, null);
+  assert.deepEqual(store.data.stopGivenUp, { serial: SERIAL, status: 400 });
+  assert.match(message(gladys).en, /refused 3 times in a row \(HTTP 400\) and given up/);
+  assert.equal(gladys.fake.transports.at(-1).degraded, true);
+  // Still said at the next reads, until a click.
+  await advance(2 * MINUTE, 10 * SECOND);
+  assert.match(message(gladys).en, /given up/);
+  const again = await press('stop-charge');
+  assert.equal(again.success, true, again.error);
+  assert.equal(store.data.stopGivenUp, null);
+  assert.doesNotMatch(message(gladys).en, /given up/);
+});
+
+test('a stop refused for the rights (403 with a token just given) waits for the button or other credentials', async (t) => {
+  const { gladys, sma, press, advance, store, app, clock } = await setup(t);
+  sma.state.mode = '4718';
+  await advance(app.interval);
+  refuseWrites(sma, 403, 2);
+  const ack = await press('stop-charge');
+  assert.match(ack.error, /n'a peut-être pas les droits. Elle est gardée/);
+  assert.equal(store.data.pendingStop.rights, true);
+  const puts = sma.count('PUT /api/v1/parameters/IGULD:SELF');
+  await advance(10 * MINUTE, 10 * SECOND);
+  assert.equal(sma.count('PUT /api/v1/parameters/IGULD:SELF'), puts, 'no automatic try');
+  assert.match(message(gladys).en, /refused for the rights/);
+  await clock.advance(app.interval);
+  await gladys.fake.action(ACTIONS.TEST_CONNECTION);
+  await advance(2 * SECOND, 100);
+  assert.equal(sma.state.mode, '4721');
+  assert.equal(store.data.pendingStop, null);
+});
+
+test('under a live guard, a mode equal to the one read is still written (never "already so")', async (t) => {
+  const { sma, press, advance } = await setup(t, { config: ALLOWED });
+  sma.state.possibleModes = ['4718', '4719', '4721'];
+  sma.hooks['PUT /api/v1/parameters/IGULD:SELF'] = (r) =>
+    JSON.parse(r.body).values[0].value === '4718' ? { status: 204, body: '' } : undefined;
+  await press('start-charge');
+  await advance(61 * SECOND);
+  sma.state.mode = '4719';
+  const before = sma.requests.filter((r) => r.method === 'PUT').length;
+  await press('set-mode', 'optimized');
+  assert.equal(sma.requests.filter((r) => r.method === 'PUT').length, before + 1);
+});
+
+test('a poll read showing 4721 ends a stop kept; other modes never do', async (t) => {
+  const { sma, app, advance, store } = await setup(t);
+  const keep = (from) => {
+    app.memory.pendingStop = {
+      serial: SERIAL,
+      at: app.mono(),
+      from,
+      changedReads: 0,
+      notBefore: app.mono() + HOUR,
+      sent: 0,
+      rights: false,
+      refusal: null,
+    };
+  };
+  keep('4718');
+  sma.state.mode = '4721';
+  await advance(app.interval);
+  assert.equal(store.data.pendingStop, null);
+  keep('4721');
+  sma.state.mode = '4718';
+  await advance(3 * app.interval);
+  assert.ok(store.data.pendingStop);
+});
+
+test('a start that leaves clears the stop kept in /data at once', async (t) => {
+  const { sma, press, store } = await setup(t, { config: ALLOWED });
+  sma.down = true;
+  await press('stop-charge');
+  sma.down = false;
+  sma.state.mode = '4721';
+  // The start goes before the stop timer (the kept stop waits 30 s).
+  const ack = await press('start-charge', 1, 2 * SECOND);
+  assert.equal(ack.success, true, ack.error);
+  assert.equal(store.data.pendingStop, null);
+});
+
+test('a clicked stop applied clears the stop kept before it', async (t) => {
+  const { sma, press, store, app } = await setup(t);
+  app.memory.pendingStop = {
+    serial: SERIAL,
+    at: app.mono(),
+    from: null,
+    changedReads: 0,
+    notBefore: app.mono() + HOUR,
+    sent: 0,
+    rights: false,
+    refusal: null,
+  };
+  sma.state.mode = '4718';
+  const ack = await press('stop-charge', 1, 2 * SECOND);
+  assert.equal(ack.success, true, ack.error);
+  assert.equal(store.data.pendingStop, null);
+});
+
+test('a good read resets the doubling wait of the reads refused for rights', async (t) => {
+  const { sma, app, advance } = await setup(t);
+  sma.hooks['POST /api/v1/measurements/live'] = () => ({ status: 403, body: '' });
+  sma.tokens.clear();
+  app.token = undefined;
+  await advance(app.interval);
+  assert.equal(app.charger.forbidden, 1);
+  delete sma.hooks['POST /api/v1/measurements/live'];
+  await advance(5 * MINUTE, 10 * SECOND);
+  assert.equal(app.charger.forbidden, 0);
+});
+
+test('the stop timer is armed at a start with a stop kept, and again after each try', async (t) => {
+  const store = memoryStore();
+  const first = await setup(t, { store, config: { ...CONFIG, poll_interval: 3600 } });
+  first.sma.state.mode = '4718';
+  first.sma.down = true;
+  await first.press('stop-charge');
+  first.app.halt();
+  const devices = first.gladys.fake.devices;
+  const again = await setup(t, {
+    store,
+    sma: first.sma,
+    clock: first.clock,
+    devices,
+    config: { ...CONFIG, poll_interval: 3600 },
+  });
+  // Still down at the restart: the first read and the first tries fail.
+  await again.advance(2 * MINUTE, 5 * SECOND);
+  again.sma.down = false;
+  await again.advance(MINUTE, 5 * SECOND);
+  assert.equal(again.sma.state.mode, '4721');
+});
+
+test('the stop timer is armed again after a try that could not run', async (t) => {
+  const { sma, app, advance, store } = await setup(t, {
+    config: { ...CONFIG, poll_interval: 3600 },
+  });
+  sma.state.mode = '4718';
+  app.memory.pendingStop = {
+    serial: SERIAL,
+    at: app.mono(),
+    from: null,
+    changedReads: 0,
+    notBefore: -Infinity,
+    sent: 0,
+    rights: false,
+    refusal: null,
+  };
+  // Another stop holds the charger when the timer fires: this try does nothing.
+  app.session = { kind: 'stop', aborted: false, done: Promise.resolve() };
+  app.armStopTimer(0);
+  await advance(SECOND, 100);
+  app.session = undefined;
+  await advance(MINUTE, 5 * SECOND);
+  assert.equal(sma.state.mode, '4721');
+  assert.equal(store.data.pendingStop, null);
 });

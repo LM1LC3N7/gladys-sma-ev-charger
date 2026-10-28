@@ -186,3 +186,18 @@ test('index guard: under a held jump, an old reference never lets a big rise thr
   assert.equal(guard.accept(1000.2, 10 * DAY + 2 * MINUTE), true);
   assert.equal(guard.held, undefined);
 });
+
+test('index guard: readings under an accepted floor for hours never widen the acceptance (r2, I4)', () => {
+  const guard = new IndexGuard({ value: 855.287, at: 0 }, undefined, 0, {
+    maxKw: 60,
+    slackKwh: 0.5,
+  });
+  assert.equal(guard.accept(12, MINUTE), false);
+  assert.ok(guard.acceptHeld());
+  let t = 2 * MINUTE;
+  for (; t < 15 * 60 * MINUTE; t += MINUTE) assert.equal(guard.accept(5, t), false);
+  assert.equal(guard.accept(900, t), false, '900 kWh after 15 h under the floor: held');
+  // A value above the acceptance dropped it: 12.1 needs a new acceptance.
+  assert.equal(guard.accept(12.1, t + MINUTE), false);
+  assert.equal(guard.held.direction, 'down');
+});

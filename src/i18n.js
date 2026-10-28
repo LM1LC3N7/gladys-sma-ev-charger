@@ -174,6 +174,20 @@ export const T = {
       `Not read any more: ${names} (another charger answers at this address, or it was removed).`,
       `Plus lue : ${names} (une autre borne répond à cette adresse, ou elle a été retirée).`,
     ),
+  pendingStopRights: both(
+    '"Stop charging" was refused for the rights of the user: it is kept and goes with other credentials or once "Test the connection" succeeds.',
+    "« Arrêter la charge » a été refusée pour les droits de l'utilisateur : elle est gardée et part avec d'autres identifiants ou une fois que « Tester la connexion » réussit.",
+  ),
+  pendingStopRefused: (status) =>
+    both(
+      `"Stop charging" was refused by the charger (HTTP ${status}): it is kept and sent again every 5 minutes.`,
+      `« Arrêter la charge » a été refusée par la borne (HTTP ${status}) : elle est gardée et renvoyée toutes les 5 minutes.`,
+    ),
+  stopGivenUp: (status) =>
+    both(
+      `"Stop charging" was refused 3 times in a row (HTTP ${status}) and given up: the charger may still be charging.`,
+      `« Arrêter la charge » a été refusée 3 fois de suite (HTTP ${status}) et abandonnée : la borne charge peut-être encore.`,
+    ),
   pendingStop: both(
     '"Stop charging" is not applied yet: it is kept and sent again every 30 seconds (after other credentials when they were refused).',
     "« Arrêter la charge » n'est pas encore appliquée : elle est gardée et renvoyée toutes les 30 secondes (après d'autres identifiants s'ils ont été refusés).",
@@ -225,6 +239,8 @@ export const T = {
       ),
   },
   badge: {
+    stopGivenUp: (status) =>
+      both(`Stop refused (HTTP ${status}), given up`, `Arrêt refusé (HTTP ${status}), abandonné`),
     held: (held) =>
       both(
         `Energy index held: ${kwh(held.from)} → ${kwh(held.to)} kWh`,
@@ -373,6 +389,29 @@ export const ERRORS = {
       `"Stop charging" not applied yet (${reason}): it is kept and sent again every 30 seconds until the charger takes it.`,
       `« Arrêter la charge » pas encore appliquée (${reason}) : elle est gardée et renvoyée toutes les 30 secondes jusqu'à ce que la borne la prenne.`,
     ),
+  stopKeptRights: (reason) =>
+    both(
+      `"Stop charging" refused by the charger (${reason}): the user may lack the rights. It is kept and goes as soon as other credentials are saved or "Test the connection" succeeds.`,
+      `« Arrêter la charge » refusée par la borne (${reason}) : l'utilisateur n'a peut-être pas les droits. Elle est gardée et part dès que d'autres identifiants sont enregistrés ou que « Tester la connexion » réussit.`,
+    ),
+  stopKeptRefused: (reason) =>
+    both(
+      `"Stop charging" refused by the charger (${reason}): it is kept and sent again every 5 minutes (given up after 3 identical refusals in a row, which the status then says).`,
+      `« Arrêter la charge » refusée par la borne (${reason}) : elle est gardée et renvoyée toutes les 5 minutes (abandonnée après 3 refus identiques de suite, ce que l'état dit alors).`,
+    ),
+  stopGivenUp: (reason) =>
+    both(
+      `"Stop charging" refused by the charger 3 times in a row (${reason}): given up. The charger may still be charging: stop it from the SMA app.`,
+      `« Arrêter la charge » refusée 3 fois de suite par la borne (${reason}) : abandonnée. La borne charge peut-être encore : arrêtez-la depuis l'application SMA.`,
+    ),
+  stopKeptCertificate: both(
+    '"Stop charging" not sent: the certificate of the charger changed, nothing is sent to it. It is kept and goes once you click "Trust the new certificate" (twice).',
+    '« Arrêter la charge » non envoyée : le certificat de la borne a changé, rien ne lui est envoyé. Elle est gardée et part une fois que vous cliquez sur « Faire confiance au nouveau certificat » (deux fois).',
+  ),
+  stopKeptStorage: both(
+    '"Stop charging" not sent: the first certificate of the charger could not be kept in /data, so the password is not sent. It is kept and sent again every 30 seconds.',
+    "« Arrêter la charge » non envoyée : le premier certificat de la borne n'a pas pu être gardé dans /data, le mot de passe n'est donc pas envoyé. Elle est gardée et renvoyée toutes les 30 secondes.",
+  ),
   stopKeptCredentials: both(
     '"Stop charging" not sent: the charger refused the credentials. It is kept and goes as soon as other credentials are saved or "Test the connection" succeeds.',
     "« Arrêter la charge » non envoyée : la borne a refusé les identifiants. Elle est gardée et part dès que d'autres identifiants sont enregistrés ou que « Tester la connexion » réussit.",

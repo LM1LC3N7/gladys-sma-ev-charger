@@ -273,20 +273,23 @@ export function openConnection({ host, port, timeoutMs, onSocket }) {
     let settled = false;
     let socket;
     // Given up during the handshake (a stop): the socket destroyed at once.
-    onSocket?.(() => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      const aborted = () =>
-        reject(new ChargerError(ERROR_KINDS.ABORTED, 'Session given up', { notSent: true }));
-      if (!socket || socket.destroyed) {
-        aborted();
-        return;
-      }
-      // Settled once the socket is really closed: the next connection opens after it.
-      socket.once('close', aborted);
-      socket.destroy();
-    });
+    onSocket?.(
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const aborted = () =>
+          reject(new ChargerError(ERROR_KINDS.ABORTED, 'Session given up', { notSent: true }));
+        if (!socket || socket.destroyed) {
+          aborted();
+          return;
+        }
+        // Settled once the socket is really closed: the next connection opens after it.
+        socket.once('close', aborted);
+        socket.destroy();
+      },
+      () => socket,
+    );
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;

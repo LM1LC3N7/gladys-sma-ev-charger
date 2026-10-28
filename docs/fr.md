@@ -111,13 +111,20 @@ refusés — il est **gardé** dans `/data` et renvoyé à son propre rythme,
 toutes les 30 secondes (après l'attente qu'un 429 demande, 5 minutes au
 plus), quels que soient l'intervalle ou une pause des lectures, jusqu'à ce
 que la borne le prenne. Il n'est jamais abandonné avec le temps : seuls une
-lecture montrant la borne arrêtée, un démarrage envoyé depuis Gladys, un
-autre mode que celui d'avant le clic lu deux fois de suite (un démarrage
-venu d'ailleurs), une autre borne à l'adresse ou un refus de l'écriture par
-la borne (4xx) y mettent fin. Avec des identifiants refusés, il n'est pas
-envoyé avec les mêmes : il part en premier dès que d'autres identifiants
-sont enregistrés ou que **Tester la connexion** réussit (un clic sur l'arrêt
-tente aussi une connexion, au plus une fois par minute).
+lecture montrant la borne arrêtée, un démarrage envoyé depuis Gladys ou
+une autre borne à l'adresse y mettent fin (un autre mode lu n'est pas pris
+pour un démarrage venu d'ailleurs : l'arrêt n'ayant jamais été appliqué,
+rien n'a été redémarré). Avec
+des identifiants refusés, ou une écriture refusée pour les droits de
+l'utilisateur (401/403 avec un jeton tout juste donné), il n'est pas envoyé
+avec les mêmes : il part en premier dès que d'autres identifiants sont
+enregistrés ou que **Tester la connexion** réussit (un clic sur l'arrêt tente
+aussi une connexion, au plus une fois par minute). Un autre refus de
+l'écriture (HTTP 4xx : borne occupée, conflit…) le garde aussi, renvoyé
+toutes les 5 minutes ; il n'est abandonné qu'après 3 refus identiques de
+suite, ce que l'état et le badge de l'appareil disent alors jusqu'à ce
+qu'une lecture montre la borne arrêtée ou que vous cliquiez sur une
+commande.
 
 Après un arrêt, les lectures des 90 secondes suivantes surveillent la
 borne : une lecture qui ne montre pas « Arrêt de la charge » alors qu'aucun
@@ -135,9 +142,7 @@ L'arrêt est refusé, et non gardé, seulement :
 - sans adresse, nom d'utilisateur et mot de passe valables ;
 - quand `/data` ne peut pas être lu (le certificat épinglé est inconnu) ;
 - pour un appareil qui n'est pas la borne à l'adresse (une autre borne y a
-  été lue) ;
-- quand la borne refuse l'écriture elle-même (HTTP 4xx : droits de
-  l'utilisateur).
+  été lue).
 
 ### Démarrage, mode et courant (option)
 

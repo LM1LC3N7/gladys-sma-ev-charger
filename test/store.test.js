@@ -96,3 +96,12 @@ test('a broken file is an error, a missing one is empty', async (t) => {
   await store.save({ a: 1 });
   assert.deepEqual(await store.load(), { a: 1 });
 });
+
+test('index ids of /data need a ":" (never __proto__)', () => {
+  const raw = JSON.parse(
+    '{"target":"1.2.3.4","indexes":{"__proto__":{"last":{"value":1,"at":1}},"ext:x:sma:1:energy-index":{"last":{"value":5,"at":1}}}}',
+  );
+  const m = fromDisk(raw, clock);
+  assert.deepEqual(Object.keys(m.indexes), ['ext:x:sma:1:energy-index']);
+  assert.equal(Object.getPrototypeOf(m.indexes), Object.prototype);
+});

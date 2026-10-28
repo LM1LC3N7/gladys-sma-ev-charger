@@ -338,6 +338,10 @@ export class SmaApp {
       this.memory.block = null;
       this.memory.lastReadAt = -Infinity;
       this.lastReadAt = -Infinity;
+      if (this.memory.pendingStop) {
+        // Other credentials: a stop kept for rights is tried with them.
+        this.memory.pendingStop.rights = false;
+      }
       await this.saveMemory();
     }
     if (this.needsRestart(next)) {
@@ -616,6 +620,11 @@ export class SmaApp {
       this.memory.block = null;
       await this.saveMemory();
       this.logger.info('SMA EV Charger: credentials accepted, block lifted');
+      if (this.charger.error === ERROR_KINDS.AUTH) {
+        // The refusal is over: never shown again as the reason of a failure.
+        this.charger.error = undefined;
+        if (this.charger.online === false) this.charger.online = undefined;
+      }
       if (this.memory.pendingStop) {
         // The stop kept during the block goes first, now.
         this.armStopTimer(0);
@@ -1161,7 +1170,16 @@ export class SmaApp {
       return [false, T.storageUnreadable];
     }
     const mono = this.mono();
-    const kept = this.memory.pendingStop ? T.pendingStop : undefined;
+    const pending = this.memory.pendingStop;
+    const kept = pending
+      ? pending.rights
+        ? T.pendingStopRights
+        : pending.refusal
+          ? T.pendingStopRefused(pending.refusal.status)
+          : T.pendingStop
+      : this.memory.stopGivenUp
+        ? T.stopGivenUp(this.memory.stopGivenUp.status)
+        : undefined;
     const withKept = (text) => (kept ? join(text, kept) : text);
     const pause = this.pauseMessage(mono);
     if (pause) {
@@ -1430,10 +1448,15 @@ export class SmaApp {
     const c = this.known();
     if (c && created.has(chargerIds(this.gladys, c.serial).device)) {
       const held = this.currentHold();
+      const givenUp = this.memory.stopGivenUp?.serial === c.serial ? this.memory.stopGivenUp : null;
       entries.push({
         external_id: chargerIds(this.gladys, c.serial).device,
         transport: c.online === false ? DEVICE_TRANSPORTS.UNREACHABLE : DEVICE_TRANSPORTS.LOCAL,
-        ...(held ? { degraded: true, message: T.badge.held(held) } : {}),
+        ...(givenUp
+          ? { degraded: true, message: T.badge.stopGivenUp(givenUp.status) }
+          : held
+            ? { degraded: true, message: T.badge.held(held) }
+            : {}),
       });
     }
     for (const serial of this.orphans()) {
@@ -1519,16 +1542,30 @@ export class SmaApp {
       }
       await this.charger.running?.catch(() => {});
       await this.tick({ manual: true });
+      this.afterButton();
       return this.lastMessage() ?? T.connecting;
     }
     if (mono < this.readDue || this.session) {
+      // The last read (within the interval) succeeded: a success of the button too.
+      this.afterButton();
       const last = this.lastMessage();
       const notDue = T.test.notDue(age(Math.max(SECOND, this.readDue - mono)));
       return last ? join(notDue, last) : notDue;
     }
     // A read now (a read in progress is joined).
     await this.tick();
+    this.afterButton();
     return this.lastMessage() ?? T.connecting;
+  }
+
+  /** "Test the connection" read the charger: a stop kept for rights is tried again now. */
+  afterButton() {
+    const kept = this.memory.pendingStop;
+    if (kept?.rights && this.charger.online === true && !this.charger.error && !this.blocked()) {
+      kept.rights = false;
+      this.saveMemory().catch(() => {});
+      this.armStopTimer(0);
+    }
   }
 
   /** Whether `pending` is a valid first click for a second one now (3 s to 60 s ago). */
@@ -1669,6 +1706,12 @@ export class SmaApp {
     }
     const { role } = target;
     const wanted = this.commandValue(role, value);
+    if (this.memory.stopGivenUp && this.loaded) {
+      // A click of the user replaces the stop given up (said until now).
+      this.memory.stopGivenUp = null;
+      this.badge = undefined;
+      this.saveMemory().catch(() => {});
+    }
     const isStop = isStopCommand(role, wanted);
     if (!this.config) {
       throw this.refusal(ERRORS.noConfig);
@@ -2127,17 +2170,28 @@ export class SmaApp {
    * never dropped by the time. `err`: why it was not applied (an unreachable
    * charger is shown offline at once).
    */
-  keepStop(serial, err, { wait } = {}) {
+  keepStop(serial, err, { wait, rights = false, refusal = null } = {}) {
     const old = this.memory.pendingStop;
     const mono = this.mono();
+    this.memory.stopGivenUp = null;
     this.memory.pendingStop = {
       serial,
       // The click of the first stop still kept: a start that left after it cancels it.
       at: old?.serial === serial ? old.at : mono,
-      from: old?.serial === serial ? old.from : (this.charger.control?.mode ?? null),
+      // The mode read before the click, only from a recent read (an old one is unknown).
+      from:
+        old?.serial === serial
+          ? old.from
+          : this.fresh(this.charger)
+            ? (this.charger.control?.mode ?? null)
+            : null,
       changedReads: 0,
       notBefore: wait === undefined ? -Infinity : mono + wait,
       sent: (old?.serial === serial ? old.sent : 0) + (err?.sentToCharger ? 1 : 0),
+      /** Refused for the rights of the user: waits for other credentials or the button. */
+      rights,
+      /** The last 4xx answered to it in a row: { status, count }. */
+      refusal,
     };
     this.logger.warn(
       `SMA EV Charger: stop not applied (${errorReason(err)}), kept to be sent again`,
@@ -2183,10 +2237,17 @@ export class SmaApp {
 
   /**
    * A read of the charger seen by a stop kept: shown stopped, the stop is
-   * done; another mode than the one before the click, read twice in a row,
-   * is a start from elsewhere (never when the mode before was unknown).
+   * done. Another mode read is never taken for a start from elsewhere: the
+   * stop was never applied, so nothing was started again (a charger
+   * rebooting into the mode of its rotary switch changes the mode too; review
+   * r2, s15): in doubt, the stop goes.
    */
   watchPendingStop(control) {
+    if (control.mode === MODES.STOP && this.memory.stopGivenUp) {
+      // The charger reads stopped: the stop given up no longer matters.
+      this.memory.stopGivenUp = null;
+      this.badge = undefined;
+    }
     const kept = this.memory.pendingStop;
     if (!kept || control.mode === undefined || kept.serial !== this.charger.serial) {
       return;
@@ -2194,14 +2255,6 @@ export class SmaApp {
     if (control.mode === MODES.STOP) {
       this.memory.pendingStop = null;
       this.logger.info('SMA EV Charger: the charger reads stopped, stop kept no longer needed');
-    } else if (kept.from !== null && control.mode !== kept.from) {
-      kept.changedReads += 1;
-      if (kept.changedReads >= 2) {
-        this.memory.pendingStop = null;
-        this.logger.info('SMA EV Charger: started elsewhere after the stop, stop kept dropped');
-      }
-    } else {
-      kept.changedReads = 0;
     }
   }
 
@@ -2222,7 +2275,8 @@ export class SmaApp {
       return;
     }
     const mono = this.mono();
-    if (this.blocked() || this.session?.kind === SESSION.STOP) {
+    if (this.blocked() || kept.rights || this.session?.kind === SESSION.STOP) {
+      // No automatic try with refused credentials or rights.
       return;
     }
     if (mono < kept.notBefore) {
@@ -2282,13 +2336,34 @@ export class SmaApp {
     if (err.kind === ERROR_KINDS.OTHER_CHARGER) {
       return this.refusal(ERRORS.otherCharger);
     }
-    if (sent && (err.kind === ERROR_KINDS.REJECTED || err.kind === ERROR_KINDS.FORBIDDEN)) {
-      if (this.memory.pendingStop?.serial === serial) this.memory.pendingStop = null;
-      this.saveMemory().catch(() => {});
-      this.followUp();
-      return this.refusal(
-        err.kind === ERROR_KINDS.FORBIDDEN ? ERRORS.forbidden(reason) : ERRORS.refused(reason),
-      );
+    if (sent && err.kind === ERROR_KINDS.FORBIDDEN) {
+      // 401/403 with a token just given (an old one was renewed first): no
+      // right to write. Kept as for refused credentials: sent with other
+      // credentials or after "Test the connection" succeeds.
+      this.keepStop(serial, err, { rights: true });
+      return this.refusal(ERRORS.stopKeptRights(reason));
+    }
+    if (sent && err.kind === ERROR_KINDS.REJECTED) {
+      // Another 4xx (busy, conflict…): kept and sent again every 5 minutes;
+      // given up only after 3 identical refusals in a row, said in the status
+      // and the badge until a read shows the charger stopped or a click.
+      const old = this.memory.pendingStop;
+      const count =
+        old?.serial === serial && old.refusal?.status === err.status ? old.refusal.count + 1 : 1;
+      if (count >= TIMINGS.stopRefusalsMax) {
+        this.memory.pendingStop = null;
+        this.memory.stopGivenUp = { serial, status: err.status };
+        this.logger.warn(`SMA EV Charger: stop refused ${count} times (${reason}), given up`);
+        this.saveMemory().catch(() => {});
+        this.badge = undefined;
+        this.publishAll().catch(() => {});
+        return this.refusal(ERRORS.stopGivenUp(reason));
+      }
+      this.keepStop(serial, err, {
+        wait: TIMINGS.pendingStopWaitMax,
+        refusal: { status: err.status, count },
+      });
+      return this.refusal(ERRORS.stopKeptRefused(reason));
     }
     if (err.kind === ERROR_KINDS.AUTH) {
       if (!err.spacing) {
@@ -2316,8 +2391,8 @@ export class SmaApp {
           )
         : undefined;
       this.keepStop(serial, Object.assign(err, { sentToCharger: sent }), { wait });
-      if (err.kind === ERROR_KINDS.CERTIFICATE) return this.refusal(ERRORS.certificate);
-      if (err.kind === ERROR_KINDS.STORAGE) return this.refusal(ERRORS.storage);
+      if (err.kind === ERROR_KINDS.CERTIFICATE) return this.refusal(ERRORS.stopKeptCertificate);
+      if (err.kind === ERROR_KINDS.STORAGE) return this.refusal(ERRORS.stopKeptStorage);
       return this.refusal(ERRORS.stopKept(reason));
     }
     // A silence, a cut connection after the write: it may have reached the

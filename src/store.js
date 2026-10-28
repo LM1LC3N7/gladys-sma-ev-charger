@@ -97,6 +97,8 @@ export const emptyMemory = () => ({
   lastChangeAt: -Infinity,
   unconfirmedStartUntil: -Infinity,
   pendingStop: null,
+  /** A stop given up after 3 identical refusals: { serial, status }, shown until a read 4721 or a click. */
+  stopGivenUp: null,
   /** The 90 s watch after a stop: { serial, sentAt, until, mayLand, confirmed, reasserts }. */
   stopWatch: null,
   indexes: {},
@@ -131,8 +133,11 @@ export function toDisk(memory, { mono, now, session }) {
           changedReads: memory.pendingStop.changedReads,
           notBefore: wall(memory.pendingStop.notBefore),
           sent: memory.pendingStop.sent,
+          rights: memory.pendingStop.rights,
+          refusal: memory.pendingStop.refusal,
         }
       : null,
+    stopGivenUp: memory.stopGivenUp ?? null,
     stopWatch: memory.stopWatch
       ? {
           ...memory.stopWatch,
@@ -218,7 +223,24 @@ export function fromDisk(raw, { mono, now, session }) {
       changedReads: Math.min(count(stop.changedReads), 1),
       notBefore: ahead(stop.notBefore, TIMINGS.pendingStopWaitMax),
       sent: count(stop.sent),
+      rights: stop.rights === true,
+      refusal:
+        plain(stop.refusal) &&
+        Number.isInteger(stop.refusal.status) &&
+        stop.refusal.status >= 400 &&
+        stop.refusal.status < 500
+          ? { status: stop.refusal.status, count: Math.min(count(stop.refusal.count), 10) }
+          : null,
     };
+  }
+  const givenUp = plain(data.stopGivenUp) ? data.stopGivenUp : undefined;
+  if (
+    givenUp &&
+    typeof givenUp.serial === 'string' &&
+    SERIAL.test(givenUp.serial) &&
+    Number.isInteger(givenUp.status)
+  ) {
+    memory.stopGivenUp = { serial: givenUp.serial, status: givenUp.status };
   }
   const watch = plain(data.stopWatch) ? data.stopWatch : undefined;
   if (

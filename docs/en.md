@@ -102,12 +102,17 @@ or 5xx to it, its certificate changed, or the credentials are refused — it
 is **kept** in `/data` and sent again on its own rhythm, every 30 seconds
 (after the wait a 429 asks for, 5 minutes at most), whatever the interval or
 a pause of the reads, until the charger takes it. It is never dropped by the
-time; only a read showing the charger stopped, a start sent from Gladys, a
-mode other than the one before the click read twice in a row (a start from
-elsewhere), another charger at the address or the charger refusing the write
-(4xx) end it. With refused credentials it is not sent with the same ones: it
-goes first as soon as other credentials are saved or **Test the connection**
-succeeds (a click of the stop also tries one login, at most once a minute).
+time; only a read showing the charger stopped, a start sent from Gladys or
+another charger at the address end it (another mode read is not taken for a
+start from elsewhere: the stop never applied, nothing was started again). With refused
+credentials, or a write refused for the rights of the user (401/403 with a
+token just given), it is not sent with the same ones: it goes first as soon as
+other credentials are saved or **Test the connection** succeeds (a click of
+the stop also tries one login, at most once a minute). Another refusal of the
+write (HTTP 4xx: busy, conflict…) keeps it too, sent again every 5 minutes;
+only after 3 identical refusals in a row is it given up, which the status and
+the badge of the device then say until a read shows the charger stopped or
+you click a command.
 
 After a stop, the reads of the next 90 seconds watch the charger: one that
 does not show "Charge stop" while no start left Gladys since sends the stop
@@ -123,8 +128,7 @@ The stop is refused, and not kept, only:
 - without a valid address, user name and password;
 - when `/data` cannot be read (the pinned certificate is unknown);
 - for a device that is not the charger at the address (another charger read
-  there);
-- when the charger refuses the write itself (HTTP 4xx: rights of the user).
+  there).
 
 ### Start, mode and current (option)
 

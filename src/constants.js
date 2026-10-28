@@ -262,6 +262,8 @@ export const TIMINGS = {
    * waits for its Retry-After, bounded.
    */
   pendingStopRetry: 30 * SECOND,
+  /** A stop refused by the same 4xx this many times in a row is given up (said in the status and the badge). */
+  stopRefusalsMax: 3,
   pendingStopWaitMax: 5 * MINUTE,
   /** Reads after a command, spaced: its effect, then a check. */
   followUps: [5 * SECOND, 20 * SECOND],

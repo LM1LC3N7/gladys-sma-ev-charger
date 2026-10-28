@@ -15,6 +15,7 @@ import {
   ERROR_KINDS,
   exchange,
   normalizeFingerprint,
+  openConnection,
 } from '../src/sma/http.js';
 import { certs, httpsServer, impostorServer, refusePort, reply } from './kit/index.mjs';
 import { measurementsOf, parametersOf } from './helpers/fakeSma.js';
@@ -235,4 +236,35 @@ test('an answer without a length is bounded too (read until the close)', async (
     }),
     (err) => err.kind === ERROR_KINDS.PROTOCOL && /too large/.test(err.message),
   );
+});
+
+test('a TLS handshake under way is closed by the app, and settles only once closed', async (t) => {
+  const { blackhole } = await import('./kit/index.mjs');
+  // Accepts the TCP connection, never answers: the TLS handshake hangs.
+  const hole = await blackhole();
+  t.after(() => hole.close());
+  let abort;
+  let socketOf;
+  const hung = openConnection({
+    host: '127.0.0.1',
+    port: hole.port,
+    timeoutMs: 5_000,
+    onSocket: (fn, get) => {
+      abort = fn;
+      socketOf = get;
+    },
+  });
+  while (hole.connections === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+  const started = performance.now();
+  let closeSeen = false;
+  socketOf().once('close', () => {
+    closeSeen = true;
+  });
+  abort();
+  await assert.rejects(hung, (err) => {
+    // Settled only once the socket emitted 'close' (never a second one opened before).
+    assert.equal(closeSeen, true, 'socket closed before settling');
+    return err.kind === ERROR_KINDS.ABORTED && err.notSent;
+  });
+  assert.ok(performance.now() - started < 1_000, 'closed at once');
 });
