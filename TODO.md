@@ -268,3 +268,9 @@ up to date at the end of every milestone.
   the watch going on, the warning kept, the rhythm kept.
 - **Demo files of the template** (`src/devices/*`, `scenes.js`, `widgets.js`,
   `weather.js` and their tests) deleted with `git rm`.
+
+## Next patch
+
+- r5 m14 (`src/app.js:2551`): a 5xx on a stop counts as "not applied" while a 5xx on a start counts as
+  "applied". Residual case: kept stop, then "Optimized charging" answered 503 and not applied, the charger
+  stays in boost. Option: restore the kept stop on a 5xx too (not on a lost answer).
