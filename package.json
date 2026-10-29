@@ -1,6 +1,6 @@
 {
   "name": "gladys-sma-ev-charger",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Gladys Assistant external integration for SMA EV Charger and eCharger wall boxes (state, power, current and voltage per phase, energy index, session energy, charging mode and current; stop always available, optional start, mode and current), over their local web API. Unofficial, not affiliated with SMA.",
   "type": "module",

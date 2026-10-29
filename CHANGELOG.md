@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-29
+
 ### Added
 
 - First version: an SMA EV Charger or eCharger read over its local web API
@@ -23,4 +25,5 @@ the notes of the version's GitHub Release.
 - A stop not applied (charger unreachable, 429 or 5xx, refused credentials)
   is kept and sent again every 30 seconds until the charger takes it.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-sma-ev-charger/commits/main
+[Unreleased]: https://github.com/LM1LC3N7/gladys-sma-ev-charger/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-sma-ev-charger/releases/tag/v0.1.1

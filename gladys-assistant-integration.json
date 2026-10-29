@@ -6,8 +6,8 @@
     "en": "SMA EV Charger over its local web API: state, power, energy, stop; optional start and mode.",
     "fr": "Borne SMA EV Charger par son API web locale : état, puissance, énergie, arrêt ; démarrage en option."
   },
-  "version": "0.1.0",
-  "docker_image": "ghcr.io/lm1lc3n7/gladys-sma-ev-charger:0.1.0",
+  "version": "0.1.1",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-sma-ev-charger:0.1.1",
   "gladys_version": ">=5.1.0",
   "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-sma-ev-charger/main/cover.png",
   "categories": ["vehicles", "energy"],
