@@ -95,10 +95,11 @@ test/kit/                         parts of gladys-testkit: fake servers, clocks,
   the minute, a 429/5xx pause, a failed read, before the first read); not
   applied (unreachable, 429/5xx, refused credentials…), it is retried within
   its budget, then kept in /data and sent again every 30 s on its own timer,
-  never dropped by the time (only a read showing it, a start of Gladys, a
-  change read twice elsewhere); with refused credentials it waits for new
-  ones or the button (a click: one login a minute); contradicted by a read
-  within 90 s, sent again twice at most.
+  never dropped by the time (only a read showing it, a start that left
+  Gladys, another charger or address; a 4xx: every 5 min, given up after 3
+  identical ones to the resends of one click); with refused credentials or
+  rights it waits for new ones or the button (a click: one login a minute);
+  contradicted by a read within 90 s, sent again twice at most.
   Start, the other modes and the current are behind `allow_commands` (off),
   decided on a read of the same session, checked again in `beforeSend`, one a
   minute (kept in /data before the first byte); a command is a success only

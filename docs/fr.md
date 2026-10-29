@@ -122,9 +122,19 @@ enregistrés ou que **Tester la connexion** réussit (un clic sur l'arrêt tente
 aussi une connexion, au plus une fois par minute). Un autre refus de
 l'écriture (HTTP 4xx : borne occupée, conflit…) le garde aussi, renvoyé
 toutes les 5 minutes ; il n'est abandonné qu'après 3 refus identiques de
-suite, ce que l'état et le badge de l'appareil disent alors jusqu'à ce
-qu'une lecture montre la borne arrêtée ou que vous cliquiez sur une
-commande.
+suite (comptés de nouveau à partir de 1 à chaque clic sur l'arrêt), ce que
+l'état et le badge de l'appareil disent alors jusqu'à ce qu'une lecture
+montre la borne arrêtée ou qu'une commande parte de Gladys (un arrêt, ou un
+démarrage, un mode ou un courant permis par l'option ; un clic refusé avant
+tout envoi laisse l'avertissement).
+
+Pour annuler un arrêt gardé (pour charger malgré tout) : démarrez la charge
+ou choisissez un mode depuis Gladys, avec l'option (la commande est alors
+écrite même si la borne montre déjà ce mode, pour qu'elle mette fin à
+l'arrêt gardé) ; ou réglez le mode « Arrêt de la charge » dans l'application
+SMA et attendez que Gladys le lise (l'état ne parle plus de l'arrêt gardé),
+puis choisissez-y le mode voulu ; ou enregistrez une autre adresse. Sinon,
+il attend : il n'est jamais abandonné avec le temps.
 
 Après un arrêt, les lectures des 90 secondes suivantes surveillent la
 borne : une lecture qui ne montre pas « Arrêt de la charge » alors qu'aucun

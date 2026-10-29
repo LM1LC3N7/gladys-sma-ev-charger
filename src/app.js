@@ -26,15 +26,16 @@
 //   - "Stop charging" (and the mode "Charge stop" of the select) is
 //     protective: it needs no option and is never held back: not by a
 //     command in flight (it takes the charger at once), not by the minute
-//     between two changes, not by a 429/5xx pause, not by refused
-//     credentials (one login at most every 5 minutes: a refused password
-//     never loops), not by a failed read (it needs none), not before the
-//     first read after a restart (the serial is kept in /data), not by a
-//     /data that cannot be written. Not sent (unreachable), it is tried again
-//     within its budget, then kept in /data and sent again before the next
-//     reads (3 times within 15 minutes). A stop contradicted by a read (the
-//     charger still not stopped, or a start of Gladys that may land after it)
-//     is sent again, twice at most;
+//     between two changes, not by a 429/5xx pause, not by a failed read (it
+//     needs none), not before the first read after a restart (the serial is
+//     kept in /data), not by a /data that cannot be written. Not applied
+//     (unreachable, a 429/5xx, refused credentials or rights, another 4xx),
+//     it is tried again within its budget, then kept in /data and sent again
+//     on its own timer, never dropped by the time; with refused credentials
+//     or rights it waits for other ones or "Test the connection" (a click of
+//     the stop: one login a minute at most). A stop contradicted by a read
+//     (the charger still not stopped, or a start of Gladys that may land
+//     after it) is sent again, twice at most;
 //   - "Start charging", the other modes and the charging current stay behind
 //     an option (off by default), checked on arrival and again right before
 //     sending; they are decided on a fresh read in the same session, never
@@ -548,8 +549,8 @@ export class SmaApp {
   /**
    * Credentials refused: kept in /data, and no automatic try any more (a
    * charger may lock the account after a few refused passwords): only other
-   * credentials saved, "Test the connection" (one try a minute) or a stop
-   * (one login every 5 minutes) try again.
+   * credentials saved, "Test the connection" (one try a minute) or a click of
+   * the stop (one login a minute) try again.
    */
   async authFailed() {
     const failures = (this.memory.block?.failures ?? 0) + 1;
@@ -1558,10 +1559,15 @@ export class SmaApp {
     return this.lastMessage() ?? T.connecting;
   }
 
-  /** "Test the connection" read the charger: a stop kept for rights is tried again now. */
+  /**
+   * "Test the connection" read the charger: a stop kept for rights is tried
+   * again now. Only on a read that gave the values: never after a failure,
+   * nor a 429 (which leaves the charger shown online, with its pause).
+   */
   afterButton() {
     const kept = this.memory.pendingStop;
-    if (kept?.rights && this.charger.online === true && !this.charger.error && !this.blocked()) {
+    const c = this.charger;
+    if (kept?.rights && c.online === true && !c.error && !this.paused() && !this.blocked()) {
       kept.rights = false;
       this.saveMemory().catch(() => {});
       this.armStopTimer(0);
@@ -1706,12 +1712,6 @@ export class SmaApp {
     }
     const { role } = target;
     const wanted = this.commandValue(role, value);
-    if (this.memory.stopGivenUp && this.loaded) {
-      // A click of the user replaces the stop given up (said until now).
-      this.memory.stopGivenUp = null;
-      this.badge = undefined;
-      this.saveMemory().catch(() => {});
-    }
     const isStop = isStopCommand(role, wanted);
     if (!this.config) {
       throw this.refusal(ERRORS.noConfig);
@@ -1893,7 +1893,13 @@ export class SmaApp {
     if (control.possibleModes && !control.possibleModes.includes(code)) {
       throw this.refusal(ERRORS.modeNotOffered(MODE_NAMES[code]));
     }
-    if (control.mode === code && !this.guardActive(serial, 'mode')) {
+    if (
+      control.mode === code &&
+      !this.guardActive(serial, 'mode') &&
+      this.memory.pendingStop?.serial !== serial
+    ) {
+      // Already so. With a stop kept for this charger, it is written all the
+      // same: only a start that leaves ends the stop kept (review r3, m12).
       return undefined;
     }
     return {
@@ -2152,6 +2158,12 @@ export class SmaApp {
       this.guards.delete(`${this.memory.stopWatch.serial}:mode`);
       this.memory.stopWatch = null;
     }
+    if (this.memory.stopGivenUp) {
+      // A write that leaves (a stop, or a command allowed) replaces the stop
+      // given up; a click refused before sending never does (review r3, m11).
+      this.memory.stopGivenUp = null;
+      this.badge = undefined;
+    }
     this.saveMemory().catch(() => {});
   }
 
@@ -2178,16 +2190,7 @@ export class SmaApp {
       serial,
       // The click of the first stop still kept: a start that left after it cancels it.
       at: old?.serial === serial ? old.at : mono,
-      // The mode read before the click, only from a recent read (an old one is unknown).
-      from:
-        old?.serial === serial
-          ? old.from
-          : this.fresh(this.charger)
-            ? (this.charger.control?.mode ?? null)
-            : null,
-      changedReads: 0,
       notBefore: wait === undefined ? -Infinity : mono + wait,
-      sent: (old?.serial === serial ? old.sent : 0) + (err?.sentToCharger ? 1 : 0),
       /** Refused for the rights of the user: waits for other credentials or the button. */
       rights,
       /** The last 4xx answered to it in a row: { status, count }. */
@@ -2283,7 +2286,14 @@ export class SmaApp {
       this.armStopTimer(kept.notBefore - mono);
       return;
     }
-    const entry = { role: FEATURES.STOP, isStop: true, startLike: false, overtaken: undefined };
+    // `kept`: a resend of the stop kept (its 4xx add up; a new click starts again).
+    const entry = {
+      role: FEATURES.STOP,
+      isStop: true,
+      startLike: false,
+      overtaken: undefined,
+      kept: true,
+    };
     const plan = this.plan(entry, undefined, kept.serial);
     entry.mayLand = this.startMayLand(entry, kept.serial);
     const deadline = mono + 3 * TIMINGS.readTimeout;
@@ -2326,9 +2336,10 @@ export class SmaApp {
   /**
    * What a stop that failed leaves behind, whether clicked or kept: kept
    * again when it was not applied (not sent, a 429 or 5xx answered to it,
-   * refused credentials), watched when it may have reached the charger,
-   * dropped only when the charger refused it (4xx: rights) or another
-   * charger answers. Returns the refusal for the ack.
+   * refused credentials or rights, another 4xx), watched when it may have
+   * reached the charger, given up only after 3 identical 4xx in a row to the
+   * resends of one click, dropped when another charger answers. Returns the
+   * refusal for the ack.
    */
   async stopFailed(err, { serial, entry, plan }) {
     const reason = errorReason(err);
@@ -2346,10 +2357,13 @@ export class SmaApp {
     if (sent && err.kind === ERROR_KINDS.REJECTED) {
       // Another 4xx (busy, conflict…): kept and sent again every 5 minutes;
       // given up only after 3 identical refusals in a row, said in the status
-      // and the badge until a read shows the charger stopped or a click.
+      // and the badge until a read shows the charger stopped or a write
+      // leaves. A new click of the stop counts from 1 again (review r3, m13).
       const old = this.memory.pendingStop;
       const count =
-        old?.serial === serial && old.refusal?.status === err.status ? old.refusal.count + 1 : 1;
+        entry.kept && old?.serial === serial && old.refusal?.status === err.status
+          ? old.refusal.count + 1
+          : 1;
       if (count >= TIMINGS.stopRefusalsMax) {
         this.memory.pendingStop = null;
         this.memory.stopGivenUp = { serial, status: err.status };
@@ -2390,7 +2404,7 @@ export class SmaApp {
             Math.max(TIMINGS.pendingStopRetry, err.retryAfter ?? TIMINGS.pendingStopRetry),
           )
         : undefined;
-      this.keepStop(serial, Object.assign(err, { sentToCharger: sent }), { wait });
+      this.keepStop(serial, err, { wait });
       if (err.kind === ERROR_KINDS.CERTIFICATE) return this.refusal(ERRORS.stopKeptCertificate);
       if (err.kind === ERROR_KINDS.STORAGE) return this.refusal(ERRORS.stopKeptStorage);
       return this.refusal(ERRORS.stopKept(reason));

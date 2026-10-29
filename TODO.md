@@ -158,8 +158,14 @@ up to date at the end of every milestone.
   review r2 s15) (review r2, I1: a 4xx of the write no
   longer ends it: 401/403 with a token just given waits for other
   credentials or a successful "Test the connection"; another 4xx is sent
-  again every 5 min, given up after 3 identical refusals in a row, said in
-  the status and the badge until a read shows 4721 or a click). With refused
+  again every 5 min, given up after 3 identical refusals in a row to the
+  resends of one click (a new click of the stop counts from 1 again, review
+  r3 m13), said in the status and the badge until a read shows 4721 or a
+  write leaves Gladys — a stop, or a command allowed; a click refused before
+  sending leaves it, review r3 m11). To cancel it: a start or a mode sent
+  from Gladys (the option on; written even when the charger already shows
+  that mode while a stop is kept), the mode "Charge stop" set in the SMA app
+  until a read shows it, or another address (review r3 m12). With refused
   credentials it is never sent with the same ones: new credentials or a
   successful "Test the connection" send it first; a click of the stop tries
   one login, at most once a minute like the button (review r1, B2). Watch of
@@ -176,7 +182,8 @@ up to date at the end of every milestone.
   mode: measurements and parameters; current: parameters), never memory; a
   missing value refuses; start refused without a vehicle, on a fault, a lock
   or an unknown state; a mode the charger does not list in `possibleValues`
-  refused; nothing sent when already so (unless a guard holds); the minute
+  refused; nothing sent when already so (unless a guard holds, or a stop is
+  kept: a start must leave to end it); the minute
   kept in `/data` BEFORE the first byte (a failed save refuses; given back
   when nothing left or the charger refused). Ceiling: the lowest of
   `max_current` (16 A, 6–32 A), the `max` of `AcALim` and the rated current;
@@ -232,5 +239,18 @@ up to date at the end of every milestone.
   says it is kept and when it goes; m10 a block lifted clears the old reason;
   the index guard takes the approved fix of gladys-span-panel (an accepted
   drop is a floor both ways, its margin restarted under the floor).
+- **Review r3 fixes** (2026-10-28): I1 a test for each guard left alive
+  (other credentials lift the rights of a kept stop; different 4xx never
+  give it up; the warning of a stop given up cleared by a read 4721, by a
+  write that leaves and by a new stop kept; the button lifts the rights only
+  on a read that gave the values, never after a failure nor a 429; a lifted block clears the old reason; a value under the
+  accepted floor of the index keeps the acceptance; the stop timer armed
+  after the first read of a restart whatever it did); m11, m12 (the fields
+  `from`, `changedReads` and `sent` of the kept stop are no longer written,
+  older files still read), m13 above. The stop timer: armed by every stop
+  kept, again after each try, and by a restart after its first read (a
+  command holding the charger then, or a "still running" refusal, cannot
+  leave it unarmed); nothing else drops it but `halt()`, which a restart
+  follows.
 - **Demo files of the template** (`src/devices/*`, `scenes.js`, `widgets.js`,
   `weather.js` and their tests) deleted with `git rm`.

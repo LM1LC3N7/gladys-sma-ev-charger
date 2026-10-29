@@ -201,3 +201,17 @@ test('index guard: readings under an accepted floor for hours never widen the ac
   assert.equal(guard.accept(12.1, t + MINUTE), false);
   assert.equal(guard.held.direction, 'down');
 });
+
+test('index guard: a value under the accepted floor is held, the acceptance kept for the value listed (r3)', () => {
+  const guard = guardOf({ value: 1000, at: 0 });
+  assert.equal(guard.accept(10, MINUTE), false);
+  assert.ok(guard.acceptHeld());
+  // The read of the click had no meter reading: the next one, under the floor.
+  assert.equal(guard.accept(9.5, 2 * MINUTE), false);
+  assert.deepEqual([guard.held.direction, guard.held.to], ['down', 9.5]);
+  assert.equal(guard.accepted.to, 10);
+  // The value accepted comes back: taken, without a new click.
+  assert.equal(guard.accept(10.2, 3 * MINUTE), true);
+  assert.deepEqual(guard.last, { value: 10.2, at: 3 * MINUTE });
+  assert.equal(guard.held, undefined);
+});

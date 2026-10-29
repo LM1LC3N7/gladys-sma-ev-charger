@@ -110,9 +110,18 @@ token just given), it is not sent with the same ones: it goes first as soon as
 other credentials are saved or **Test the connection** succeeds (a click of
 the stop also tries one login, at most once a minute). Another refusal of the
 write (HTTP 4xx: busy, conflict…) keeps it too, sent again every 5 minutes;
-only after 3 identical refusals in a row is it given up, which the status and
-the badge of the device then say until a read shows the charger stopped or
-you click a command.
+only after 3 identical refusals in a row (counted from 1 again at each click
+of the stop) is it given up, which the status and the badge of the device
+then say until a read shows the charger stopped or a command leaves Gladys (a
+stop, or a start, a mode or a current allowed by the option; a click refused
+before anything is sent leaves the warning).
+
+To cancel a kept stop (to charge after all): start the charge or choose a
+mode from Gladys, with the option (the command is then written even when the
+charger already shows that mode, so that it ends the kept stop); or set the
+mode "Charge stop" in the SMA app and wait until Gladys reads it (the status
+no longer mentions the kept stop), then choose the mode you want there; or
+save another address. Otherwise it waits: it is never dropped with time.
 
 After a stop, the reads of the next 90 seconds watch the charger: one that
 does not show "Charge stop" while no start left Gladys since sends the stop

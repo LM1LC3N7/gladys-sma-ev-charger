@@ -11,7 +11,9 @@
 //     first read after a restart, and the SHA-256 fingerprint of its
 //     certificate (the pin: not a secret either, the certificate is public),
 //     plus the one last refused, for "Trust the new certificate";
-//   - a stop not sent yet (sent again before the next reads), the minute
+//   - a stop not applied yet (sent again on its own timer), a stop given
+//     up after 3 identical refusals (said until a read shows the charger
+//     stopped or a write leaves), the watch of a stop sent, the minute
 //     between two changes and the watch of a start left without
 //     confirmation;
 //   - the guard of the energy index (its reference and a value held back).
@@ -129,10 +131,7 @@ export function toDisk(memory, { mono, now, session }) {
       ? {
           serial: memory.pendingStop.serial,
           at: wall(memory.pendingStop.at),
-          from: memory.pendingStop.from,
-          changedReads: memory.pendingStop.changedReads,
           notBefore: wall(memory.pendingStop.notBefore),
-          sent: memory.pendingStop.sent,
           rights: memory.pendingStop.rights,
           refusal: memory.pendingStop.refusal,
         }
@@ -205,8 +204,9 @@ export function fromDisk(raw, { mono, now, session }) {
   memory.unconfirmedStartUntil = ahead(data.unconfirmedStartUntil, TIMINGS.guard);
   const stop = plain(data.pendingStop) ? data.pendingStop : undefined;
   // A stop clicked "in the future" (a wall clock set back) is not valid:
-  // dropped. Never dropped for its age: only a read, a newer click or a
-  // change read twice elsewhere lift it (src/app.js).
+  // dropped. Never dropped for its age: only a read showing it stopped, a
+  // start that left Gladys or another charger end it (src/app.js). The
+  // fields of older files (`from`, `changedReads`, `sent`) are ignored.
   const count = (v) => (Number.isInteger(v) && v >= 0 ? Math.min(v, 1000) : 0);
   if (
     stop &&
@@ -218,11 +218,7 @@ export function fromDisk(raw, { mono, now, session }) {
     memory.pendingStop = {
       serial: stop.serial,
       at: past(stop.at),
-      /** The mode read before the click (null: unknown, never "changed elsewhere"). */
-      from: typeof stop.from === 'string' && /^\d{1,8}$/.test(stop.from) ? stop.from : null,
-      changedReads: Math.min(count(stop.changedReads), 1),
       notBefore: ahead(stop.notBefore, TIMINGS.pendingStopWaitMax),
-      sent: count(stop.sent),
       rights: stop.rights === true,
       refusal:
         plain(stop.refusal) &&

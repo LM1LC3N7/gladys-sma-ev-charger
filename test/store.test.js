@@ -37,10 +37,9 @@ test('a round trip keeps every wait, bounded, as monotonic dates of the new life
     pendingStop: {
       serial: '1234567890',
       at: clock.mono - 1_000,
-      from: '4718',
-      changedReads: 1,
       notBefore: -Infinity,
-      sent: 1,
+      rights: true,
+      refusal: { status: 409, count: 2 },
     },
   };
   const disk = toDisk(memory, clock);
@@ -60,9 +59,13 @@ test('a round trip keeps every wait, bounded, as monotonic dates of the new life
   assert.equal(soon.stopWatch.until, 50 + 70_000);
   assert.equal(soon.stopWatch.reasserts, 1);
   assert.equal(back.lastReadAt, 50 - 2 * MINUTE - 5_000);
-  assert.equal(back.pendingStop.sent, 1);
-  assert.equal(back.pendingStop.from, '4718');
-  assert.equal(back.pendingStop.notBefore, -Infinity);
+  assert.deepEqual(back.pendingStop, {
+    serial: '1234567890',
+    at: 50 - 2 * MINUTE - 1_000,
+    notBefore: -Infinity,
+    rights: true,
+    refusal: { status: 409, count: 2 },
+  });
   assert.equal(back.pin, FP);
 });
 
@@ -74,7 +77,7 @@ test('dates in the future (a wall clock set back) are bounded; a stop clicked in
     lastReadAt: NOW + HOUR,
     lastChangeAt: NOW + HOUR,
     unconfirmedStartUntil: NOW + HOUR,
-    pendingStop: { serial: '1234567890', at: NOW + MINUTE, sent: 0 },
+    pendingStop: { serial: '1234567890', at: NOW + MINUTE },
   };
   const m = fromDisk(disk, clock);
   assert.equal(m.pause.until, clock.mono + TIMINGS.rateLimitMax);
@@ -83,6 +86,37 @@ test('dates in the future (a wall clock set back) are bounded; a stop clicked in
   assert.equal(m.lastChangeAt, clock.mono);
   assert.equal(m.unconfirmedStartUntil, clock.mono + TIMINGS.guard);
   assert.equal(m.pendingStop, null);
+});
+
+test('a stop kept by an older version is read (its dead fields ignored) and written without them', () => {
+  const disk = {
+    target: '192.168.1.80',
+    pendingStop: {
+      serial: '1234567890',
+      at: NOW - MINUTE,
+      from: '4718',
+      changedReads: 1,
+      notBefore: null,
+      sent: 2,
+      rights: false,
+      refusal: null,
+    },
+  };
+  const m = fromDisk(disk, clock);
+  assert.deepEqual(m.pendingStop, {
+    serial: '1234567890',
+    at: clock.mono - MINUTE,
+    notBefore: -Infinity,
+    rights: false,
+    refusal: null,
+  });
+  assert.deepEqual(Object.keys(toDisk(m, clock).pendingStop), [
+    'serial',
+    'at',
+    'notBefore',
+    'rights',
+    'refusal',
+  ]);
 });
 
 test('a broken file is an error, a missing one is empty', async (t) => {
