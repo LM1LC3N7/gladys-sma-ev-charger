@@ -1514,3 +1514,160 @@ test('after reads refused for the rights, a 429 then the button never lift the r
   assert.equal(store.data.pendingStop.rights, true);
   assert.equal(sma.count('PUT /api/v1/parameters/IGULD:SELF'), puts);
 });
+
+// --- Review r4 ----------------------------------------------------------------------
+
+/** The PUT of the mode `value` answered by `reply(request)` (undefined: as usual). */
+const onMode = (sma, replies) => {
+  sma.hooks['PUT /api/v1/parameters/IGULD:SELF'] = (r) => {
+    const reply = replies[JSON.parse(r.body).values[0].value];
+    return typeof reply === 'function' ? reply() : reply;
+  };
+};
+const modePuts = (sma, value) =>
+  sma.requests.filter((r) => r.method === 'PUT' && JSON.parse(r.body).values[0].value === value)
+    .length;
+
+test('a start the charger answers 429 leaves the stop kept as it was; it goes (r4, s20)', async (t) => {
+  const { sma, press, advance, store, app } = await setup(t, {
+    config: { ...ALLOWED, poll_interval: 3600 },
+  });
+  sma.state.mode = '4718';
+  let refuseStop = true;
+  onMode(sma, {
+    4721: () => (refuseStop ? { status: 409, body: '' } : undefined),
+    4718: { status: 429, body: '', headers: { 'retry-after': '60' } },
+  });
+  await press('stop-charge');
+  refuseStop = false;
+  const kept = app.memory.pendingStop;
+  assert.deepEqual(kept.refusal, { status: 409, count: 1 });
+  const ack = await press('start-charge', 1, 2 * SECOND);
+  assert.match(ack.error, /HTTP 429/);
+  assert.equal(modePuts(sma, '4718'), 1, 'the start left');
+  assert.equal(app.memory.pendingStop, kept, 'put back as it was');
+  assert.equal(app.charger.lastStartAt, -Infinity);
+  assert.deepEqual(store.data.pendingStop.refusal, { status: 409, count: 1 });
+  await advance(5 * MINUTE, 10 * SECOND);
+  assert.equal(sma.state.mode, '4721');
+  assert.equal(store.data.pendingStop, null);
+});
+
+test('optimized charging the charger refuses (409) leaves the stop kept; it goes (r4)', async (t) => {
+  const { sma, press, advance, store, app } = await setup(t, {
+    config: { ...ALLOWED, poll_interval: 3600 },
+  });
+  sma.state.mode = '4718';
+  sma.state.possibleModes = ['4718', '4719', '4721'];
+  let refuseStop = true;
+  onMode(sma, {
+    4721: () => (refuseStop ? { status: 409, body: '' } : undefined),
+    4719: { status: 409, body: '' },
+  });
+  await press('stop-charge');
+  refuseStop = false;
+  const kept = app.memory.pendingStop;
+  const ack = await press('set-mode', 'optimized', 2 * SECOND);
+  assert.match(ack.error, /HTTP 409/);
+  assert.equal(app.memory.pendingStop, kept);
+  assert.deepEqual(store.data.pendingStop.refusal, { status: 409, count: 1 }, 'in /data too');
+  assert.equal(app.charger.lastStartAt, -Infinity);
+  await advance(5 * MINUTE, 10 * SECOND);
+  assert.equal(sma.state.mode, '4721', 'never left in boost charging');
+  assert.equal(store.data.pendingStop, null);
+});
+
+test('a stop kept whose timer fires while a refused start is out still goes (r4)', async (t) => {
+  const { sma, press, send, advance, app } = await setup(t, {
+    config: { ...ALLOWED, poll_interval: 3600 },
+  });
+  sma.state.mode = '4718';
+  sma.down = true;
+  await press('stop-charge');
+  assert.ok(app.memory.pendingStop);
+  sma.down = false;
+  onMode(sma, { 4718: { status: 429, body: '', headers: { 'retry-after': '60' } } });
+  sma.delay['PUT /api/v1/parameters/IGULD:SELF'] = 2 * SECOND;
+  // The timer of the stop kept fires while the start is out (the stop then cleared).
+  app.armStopTimer(SECOND);
+  const ack = send('start-charge', 1);
+  await settle();
+  await advance(3 * SECOND, 100);
+  assert.match((await ack).error, /HTTP 429/);
+  assert.ok(app.memory.pendingStop);
+  delete sma.delay['PUT /api/v1/parameters/IGULD:SELF'];
+  await advance(5 * SECOND, 100);
+  assert.equal(sma.state.mode, '4721');
+});
+
+test('a start refused while a stop not applied yet is watched: the watch goes on (r4)', async (t) => {
+  const { sma, press, advance, app } = await setup(t, { config: ALLOWED });
+  sma.state.mode = '4718';
+  // The charger takes the stop (204) without applying it, and refuses the start.
+  onMode(sma, { 4721: { status: 204, body: '' }, 4718: { status: 409, body: '' } });
+  const stop = await press('stop-charge', 1, 2 * SECOND);
+  assert.match(stop.error, /pas encore appliquée/);
+  const sent = modePuts(sma, '4721');
+  const ack = await press('start-charge', 1, 2 * SECOND);
+  assert.match(ack.error, /HTTP 409/);
+  assert.ok(app.memory.stopWatch);
+  await advance(30 * SECOND);
+  assert.ok(modePuts(sma, '4721') > sent, 'a read showing it not stopped sends it again');
+});
+
+test('a command the charger refuses leaves the warning of a stop given up (r4)', async (t) => {
+  const ctx = await setup(t);
+  await giveUp(ctx);
+  const { gladys, sma, press, store, app } = ctx;
+  await app.configUpdated(ALLOWED);
+  refuseWrites(sma, 409);
+  const ack = await press('set-current', 10, SECOND);
+  assert.match(ack.error, /HTTP 409/);
+  assert.deepEqual(store.data.stopGivenUp, { serial: SERIAL, status: 400 });
+  assert.match(message(gladys).en, /given up/);
+});
+
+test('a stop kept and put back after a refused start keeps its rhythm (r4)', async (t) => {
+  const { sma, press, advance, app } = await setup(t, {
+    config: { ...ALLOWED, poll_interval: 3600 },
+  });
+  sma.state.mode = '4718';
+  sma.down = true;
+  await press('stop-charge');
+  sma.down = false;
+  onMode(sma, { 4718: { status: 429, body: '', headers: { 'retry-after': '60' } } });
+  const ack = await press('start-charge', 1, 2 * SECOND);
+  assert.match(ack.error, /HTTP 429/);
+  assert.ok(app.memory.pendingStop);
+  // Not hurried by the refusal: its timer (30 s after it was kept) sends it.
+  await advance(5 * SECOND, 100);
+  assert.equal(modePuts(sma, '4721'), 0);
+  await advance(30 * SECOND, SECOND);
+  assert.equal(sma.state.mode, '4721');
+});
+
+test('a refusal answered once the address changed puts nothing of the old charger back (r4)', async (t) => {
+  const { app } = await setup(t);
+  const kept = {
+    serial: SERIAL,
+    at: app.mono(),
+    notBefore: -Infinity,
+    rights: false,
+    refusal: null,
+  };
+  const entry = {
+    startLike: true,
+    undo: {
+      target: app.memory.target,
+      lastStartAt: -Infinity,
+      pendingStop: kept,
+      stopWatch: null,
+      stopGuard: undefined,
+      stopGivenUp: { serial: SERIAL, status: 409 },
+    },
+  };
+  app.memory.target = '192.168.1.81';
+  app.restoreRefused(entry);
+  assert.equal(app.memory.pendingStop, null);
+  assert.equal(app.memory.stopGivenUp, null);
+});

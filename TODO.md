@@ -85,22 +85,21 @@ up to date at the end of every milestone.
   status shows its first 8 bytes; "Trust the new certificate" in two clicks
   (3 to 60 s apart) pins exactly the fingerprint shown. A new address forgets
   the pin, the serial, the last read and a stop kept.
-- **Credentials**: user name AND password required (one alone refused, said
-  in the status), printable ASCII, 256 characters at most, memory only. The
-  access token (memory only) is used until 90 % of `expires_in` (1 min to
-  24 h, 1 h without); a 401/403 with an old token gives one new token in the
-  same session; with a token just given it is "no right" (status), never a
-  block (that read waits 5 min, then doubling up to 1 h). Token request
-  answered 401, or 400/403 with an OAuth error (`invalid_grant`,
-  `invalid_client`, `unauthorized_client`, only `error` read; another
-  400/403 is an ordinary failure, review r1 I4): **block in /data, no automatic
-  try** (stricter than gladys-alfen's 15 min / 1 h / 6 h: a charger may lock
-  the account; lot rule "refus clair : aucun essai automatique"); lifted by
-  new credentials (tried at once) or "Test the connection" (one try a
-  minute, never sooner than the interval); a stop clicked during a block
-  logs in at most once a minute after the last refusal, and is kept. No hash of the password is
-  kept, so after a restart of the container the block stays until one of
-  these.
+- **Credentials**: user name AND password required (one alone refused, said in
+  the status), printable ASCII, 256 characters at most, memory only. The
+  access token (memory only) is used until 90 % of `expires_in` (1 min to 24
+  h, 1 h without); a 401/403 with an old token gives one new token in the same
+  session; with a token just given it is "no right" (status), never a block
+  (that read waits 5 min, then doubling up to 1 h). Token request answered
+  401, or 400/403 with an OAuth error (`invalid_grant`, `invalid_client`,
+  `unauthorized_client`, only `error` read; another 400/403 is an ordinary
+  failure, review r1 I4): **block in /data, no automatic try** (stricter than
+  gladys-alfen's 15 min / 1 h / 6 h: a charger may lock the account; lot rule
+  "refus clair : aucun essai automatique"); lifted by new credentials (tried
+  at once) or "Test the connection" (one try a minute, never sooner than the
+  interval); a stop clicked during a block logs in at most once a minute after
+  the last refusal, and is kept. No hash of the password is kept, so after a
+  restart of the container the block stays until one of these.
 - **Reads**: token when needed, `measurements/live`, `parameters/search`,
   every interval (30 s by default, 15 s – 1 h). Never sooner than the
   interval (button, Discovery, `connected`, unchanged save, restart: the
@@ -152,7 +151,10 @@ up to date at the end of every milestone.
   whatever the interval, the backoff or a pause of the reads; **never
   dropped by the time** (review r1, B1). It ends only when sent and taken
   (2xx; a silence after the bytes left becomes the watch), when a read shows
-  4721, when a start leaves Gladys, with another charger or address (another
+  4721, when a start of Gladys is taken by the charger (2xx, 5xx or no
+  answer: it may have landed; a start refused, 3xx, 4xx or 429, puts back the stop
+  kept, its watch, the last start and the warning of a stop given up as
+  they were, review r4 I1), with another charger or address (another
   mode read twice no longer ends it: the stop never applied, nothing was
   started again; a reboot into the rotary switch mode changes the mode too,
   review r2 s15) (review r2, I1: a 4xx of the write no
@@ -160,11 +162,12 @@ up to date at the end of every milestone.
   credentials or a successful "Test the connection"; another 4xx is sent
   again every 5 min, given up after 3 identical refusals in a row to the
   resends of one click (a new click of the stop counts from 1 again, review
-  r3 m13), said in the status and the badge until a read shows 4721 or a
-  write leaves Gladys — a stop, or a command allowed; a click refused before
-  sending leaves it, review r3 m11). To cancel it: a start or a mode sent
-  from Gladys (the option on; written even when the charger already shows
-  that mode while a stop is kept), the mode "Charge stop" set in the SMA app
+  r3 m13), said in the status and the badge until a read shows 4721, a new
+  stop is sent or kept, or the charger takes a command allowed — a click
+  refused before sending, or a command the charger refuses, leaves it,
+  review r3 m11, r4). To cancel it: a start or a mode the charger takes
+  (the option on; written even when the charger already shows that mode
+  while a stop is kept), the mode "Charge stop" set in the SMA app
   until a read shows it, or another address (review r3 m12). With refused
   credentials it is never sent with the same ones: new credentials or a
   successful "Test the connection" send it first; a click of the stop tries
@@ -192,11 +195,12 @@ up to date at the end of every milestone.
   forced (review r1, m3).
 - **Outcomes**: sent by 3.5 s or refused unsent ("too slow", "a stop arrived
   meanwhile", "not sent"), answered by 4.3 s. 2xx then a read in the same
-  session (400 ms left at least): the value asked → success; the value
-  before → "not applied yet" + guard + reads 5 s and 20 s; nothing read →
-  "sent, without confirmation". 4xx on the write → refused (the minute given
-  back); 429 → pause; silence, 5xx, cut after the bytes left → "sent, without
-  confirmation" + guard + reads. The ack never waits for Gladys.
+  session (400 ms left at least): the value asked → success; the value before
+  → "not applied yet" + guard + reads 5 s and 20 s; nothing read → "sent,
+  without confirmation". 3xx (never followed) or 4xx on the write → refused
+  (the minute given back, a stop kept put back); 429 → pause (same); silence,
+  5xx, cut after the bytes left → "sent, without confirmation" + guard +
+  reads. The ack never waits for Gladys.
 - **Late answers**: a poll read begun before a command left is quarantined;
   a poll given up for a command is dropped; the read of a command is applied
   only when no command left during it; an answer of an old configuration
@@ -239,18 +243,28 @@ up to date at the end of every milestone.
   says it is kept and when it goes; m10 a block lifted clears the old reason;
   the index guard takes the approved fix of gladys-span-panel (an accepted
   drop is a floor both ways, its margin restarted under the floor).
-- **Review r3 fixes** (2026-10-28): I1 a test for each guard left alive
-  (other credentials lift the rights of a kept stop; different 4xx never
-  give it up; the warning of a stop given up cleared by a read 4721, by a
-  write that leaves and by a new stop kept; the button lifts the rights only
-  on a read that gave the values, never after a failure nor a 429; a lifted block clears the old reason; a value under the
-  accepted floor of the index keeps the acceptance; the stop timer armed
-  after the first read of a restart whatever it did); m11, m12 (the fields
-  `from`, `changedReads` and `sent` of the kept stop are no longer written,
-  older files still read), m13 above. The stop timer: armed by every stop
-  kept, again after each try, and by a restart after its first read (a
-  command holding the charger then, or a "still running" refusal, cannot
-  leave it unarmed); nothing else drops it but `halt()`, which a restart
-  follows.
+- **Review r3 fixes** (2026-10-28): I1 a test for each guard left alive (other
+  credentials lift the rights of a kept stop; different 4xx never give it up;
+  the warning of a stop given up cleared by a read 4721, by a write that
+  leaves and by a new stop kept; the button lifts the rights only on a read
+  that gave the values, never after a failure nor a 429; a lifted block clears
+  the old reason; a value under the accepted floor of the index keeps the
+  acceptance; the stop timer armed after the first read of a restart whatever
+  it did); m11, m12 (the fields `from`, `changedReads` and `sent` of the kept
+  stop are no longer written, older files still read), m13 above. The stop
+  timer: armed by every stop kept, again after each try, and by a restart
+  after its first read (a command holding the charger then, or a "still
+  running" refusal, cannot leave it unarmed); nothing else drops it but
+  `halt()`, which a restart follows.
+- **Review r4 fixes** (2026-10-29): I1 a start, a mode or a current the
+  charger refuses (3xx, 4xx, 429 to its write) changes nothing: what its
+  departure ended (`markSent` notes it in `entry.undo`) is put back by
+  `restoreRefused` — the stop kept as it was (refusals, wait, timer armed
+  again if it fired meanwhile), the watch of a stop, the last start, the
+  warning of a stop given up; never for another address. Only a 2xx or a
+  lost answer (silence, cut, 5xx: it may have landed) ends a stop. A 3xx on
+  a write is a refusal (never followed), as the lot rules say. Tests: s20,
+  optimized charging refused 409, the timer fired during a refused start,
+  the watch going on, the warning kept, the rhythm kept.
 - **Demo files of the template** (`src/devices/*`, `scenes.js`, `widgets.js`,
   `weather.js` and their tests) deleted with `git rm`.

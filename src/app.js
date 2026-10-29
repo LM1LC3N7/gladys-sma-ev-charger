@@ -29,7 +29,7 @@
 //     between two changes, not by a 429/5xx pause, not by a failed read (it
 //     needs none), not before the first read after a restart (the serial is
 //     kept in /data), not by a /data that cannot be written. Not applied
-//     (unreachable, a 429/5xx, refused credentials or rights, another 4xx),
+//     (unreachable, a 429/5xx, refused credentials or rights, a 3xx/4xx),
 //     it is tried again within its budget, then kept in /data and sent again
 //     on its own timer, never dropped by the time; with refused credentials
 //     or rights it waits for other ones or "Test the connection" (a click of
@@ -2140,17 +2140,34 @@ export class SmaApp {
     this.publishAll().catch((err) => this.logger.warn(`Publishing failed: ${err.message}`));
   }
 
-  /** The bookkeeping of a write at the moment it leaves (synchronous: nothing awaited). */
+  /**
+   * The bookkeeping of a write at the moment it leaves (synchronous: nothing
+   * awaited). What a command ends here is noted in `entry.undo`: put back if
+   * the charger refuses it (3xx, 4xx, 429), as only a command it takes, or
+   * whose answer is lost, ends a stop (review r4, I1; see restoreRefused).
+   */
   markSent(entry) {
     const c = this.charger;
     const mono = this.mono();
     entry.sentAt = mono;
     c.lastSentAt = mono;
+    if (!entry.isStop) {
+      const watch = this.memory.stopWatch;
+      entry.undo = {
+        target: this.memory.target,
+        lastStartAt: c.lastStartAt,
+        pendingStop: this.memory.pendingStop,
+        stopWatch: watch,
+        stopGuard: watch ? this.guards.get(`${watch.serial}:mode`) : undefined,
+        stopGivenUp: this.memory.stopGivenUp,
+      };
+    }
     if (entry.startLike) {
       c.lastStartAt = mono;
     }
     if (entry.startLike) {
-      // A start that leaves Gladys cancels a stop kept (a newer click).
+      // A start that leaves Gladys cancels a stop kept (a newer click); put
+      // back if the charger refuses it (restoreRefused).
       this.memory.pendingStop = null;
     }
     if (entry.startLike && this.memory.stopWatch) {
@@ -2164,6 +2181,36 @@ export class SmaApp {
       this.memory.stopGivenUp = null;
       this.badge = undefined;
     }
+    this.saveMemory().catch(() => {});
+  }
+
+  /**
+   * A command the charger refused (3xx, 4xx, 429 to its write): it changed
+   * nothing, so what its departure ended is put back as it was: the stop kept
+   * (its refusals, its wait, its timer), the watch of a stop, the time of the
+   * last start, the warning of a stop given up. Never for another address.
+   * Synchronous, before any wait (the timer of the stop kept may not miss
+   * it), and after `unspend`: its write to /data is the last.
+   */
+  restoreRefused(entry) {
+    const undo = entry.undo ?? {};
+    entry.undo = undefined;
+    if (this.memory.target !== undo.target) {
+      // Another address meanwhile: nothing of the old one comes back.
+      return;
+    }
+    this.charger.lastStartAt = undo.lastStartAt;
+    this.memory.pendingStop = undo.pendingStop;
+    if (undo.pendingStop && !this.stopTimer) {
+      // Its timer fired while it was out: armed again, its wait kept.
+      this.armStopTimer(Math.max(TIMINGS.stopRetryGap, undo.pendingStop.notBefore - this.mono()));
+    }
+    if (undo.stopGuard) {
+      // The watch of the stop before it goes on, to its end.
+      this.guards.set(`${undo.stopWatch.serial}:mode`, undo.stopGuard);
+      this.memory.stopWatch = undo.stopWatch;
+    }
+    this.memory.stopGivenUp = undo.stopGivenUp;
     this.saveMemory().catch(() => {});
   }
 
@@ -2264,8 +2311,9 @@ export class SmaApp {
   /**
    * The stop kept in /data, sent again in its own session (no option, no
    * read before): dropped only when another charger is read at the address
-   * or a start left Gladys since. Never with refused credentials (no
-   * automatic try: new credentials or the button send it at once).
+   * or a start of Gladys the charger took (never one it refused) left since.
+   * Never with refused credentials (no automatic try: new credentials or the
+   * button send it at once).
    */
   async sendPendingStop(generation) {
     const kept = this.memory.pendingStop;
@@ -2336,7 +2384,7 @@ export class SmaApp {
   /**
    * What a stop that failed leaves behind, whether clicked or kept: kept
    * again when it was not applied (not sent, a 429 or 5xx answered to it,
-   * refused credentials or rights, another 4xx), watched when it may have
+   * refused credentials or rights, another 3xx/4xx), watched when it may have
    * reached the charger, given up only after 3 identical 4xx in a row to the
    * resends of one click, dropped when another charger answers. Returns the
    * refusal for the ack.
@@ -2444,6 +2492,7 @@ export class SmaApp {
     if (sent && (err.kind === ERROR_KINDS.REJECTED || err.kind === ERROR_KINDS.FORBIDDEN)) {
       // The charger answered the write itself with a refusal: not applied.
       this.unspend(entry);
+      this.restoreRefused(entry);
       if (!stale) this.followUp();
       return this.refusal(
         err.kind === ERROR_KINDS.FORBIDDEN ? ERRORS.forbidden(reason) : ERRORS.refused(reason),
@@ -2497,11 +2546,13 @@ export class SmaApp {
     }
     this.logger.warn(`SMA EV Charger: ${entry.role} failed (${reason})`);
     if (err.kind === ERROR_KINDS.RATE_LIMITED) {
+      // Not taken (a 429 to the write): nothing ends.
+      this.unspend(entry);
+      this.restoreRefused(entry);
       if (!stale) {
         await this.rateLimited(err);
         this.updateStatus().catch(() => {});
       }
-      this.unspend(entry);
       return this.refusal(ERRORS.refused(reason));
     }
     // A silence, a 5xx, a cut connection after the write: it may have reached the charger.

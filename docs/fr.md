@@ -111,8 +111,10 @@ refusés — il est **gardé** dans `/data` et renvoyé à son propre rythme,
 toutes les 30 secondes (après l'attente qu'un 429 demande, 5 minutes au
 plus), quels que soient l'intervalle ou une pause des lectures, jusqu'à ce
 que la borne le prenne. Il n'est jamais abandonné avec le temps : seuls une
-lecture montrant la borne arrêtée, un démarrage envoyé depuis Gladys ou
-une autre borne à l'adresse y mettent fin (un autre mode lu n'est pas pris
+lecture montrant la borne arrêtée, un démarrage envoyé depuis Gladys que la
+borne prend (réponse 2xx ou 5xx, ou sans réponse : il a pu arriver) ou une autre
+borne à l'adresse y mettent fin (un démarrage que la borne refuse, HTTP 3xx,
+4xx ou 429, laisse l'arrêt gardé tel quel ; un autre mode lu n'est pas pris
 pour un démarrage venu d'ailleurs : l'arrêt n'ayant jamais été appliqué,
 rien n'a été redémarré). Avec
 des identifiants refusés, ou une écriture refusée pour les droits de
@@ -120,18 +122,20 @@ l'utilisateur (401/403 avec un jeton tout juste donné), il n'est pas envoyé
 avec les mêmes : il part en premier dès que d'autres identifiants sont
 enregistrés ou que **Tester la connexion** réussit (un clic sur l'arrêt tente
 aussi une connexion, au plus une fois par minute). Un autre refus de
-l'écriture (HTTP 4xx : borne occupée, conflit…) le garde aussi, renvoyé
-toutes les 5 minutes ; il n'est abandonné qu'après 3 refus identiques de
-suite (comptés de nouveau à partir de 1 à chaque clic sur l'arrêt), ce que
-l'état et le badge de l'appareil disent alors jusqu'à ce qu'une lecture
-montre la borne arrêtée ou qu'une commande parte de Gladys (un arrêt, ou un
-démarrage, un mode ou un courant permis par l'option ; un clic refusé avant
-tout envoi laisse l'avertissement).
+l'écriture (HTTP 3xx ou 4xx : borne occupée, conflit, redirection jamais
+suivie…) le garde aussi, renvoyé toutes les 5 minutes ; il n'est abandonné
+qu'après 3 refus identiques de suite (comptés de nouveau à partir de 1 à
+chaque clic sur l'arrêt), ce que l'état et le badge de l'appareil disent
+alors jusqu'à ce qu'une lecture montre la borne arrêtée, qu'un nouvel arrêt
+soit envoyé ou gardé, ou que la borne prenne un démarrage, un mode ou un
+courant permis par l'option (un clic refusé avant tout envoi, ou une
+commande que la borne refuse, laisse l'avertissement).
 
 Pour annuler un arrêt gardé (pour charger malgré tout) : démarrez la charge
-ou choisissez un mode depuis Gladys, avec l'option (la commande est alors
-écrite même si la borne montre déjà ce mode, pour qu'elle mette fin à
-l'arrêt gardé) ; ou réglez le mode « Arrêt de la charge » dans l'application
+ou choisissez un mode depuis Gladys, avec l'option, une fois la commande
+acceptée par la borne (elle est alors écrite même si la borne montre déjà ce
+mode, pour qu'elle mette fin à l'arrêt gardé ; refusée, elle laisse l'arrêt
+gardé) ; ou réglez le mode « Arrêt de la charge » dans l'application
 SMA et attendez que Gladys le lise (l'état ne parle plus de l'arrêt gardé),
 puis choisissez-y le mode voulu ; ou enregistrez une autre adresse. Sinon,
 il attend : il n'est jamais abandonné avec le temps.
@@ -187,7 +191,7 @@ envoyée**. Une commande acceptée par la borne est confirmée par une lecture
 juste après : la valeur demandée relue est un succès ; la valeur d'avant
 encore lue est « pas encore appliquée » (revérifiée 5 et 20 secondes plus
 tard) ; une commande qui a pu arriver sans réponse est « envoyée, sans
-confirmation ». Un refus de la borne (4xx) est indiqué.
+confirmation ». Un refus de la borne (3xx, 4xx) est indiqué.
 
 ## Énergie
 

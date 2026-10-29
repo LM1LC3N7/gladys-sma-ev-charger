@@ -97,28 +97,33 @@ written. It stays until a start (from Gladys with the option, from the SMA
 app, or with the rotary switch): **a forgotten stop may prevent the next
 charge**.
 
-When the stop is not applied — the charger cannot be reached, answers 429
-or 5xx to it, its certificate changed, or the credentials are refused — it
-is **kept** in `/data` and sent again on its own rhythm, every 30 seconds
-(after the wait a 429 asks for, 5 minutes at most), whatever the interval or
-a pause of the reads, until the charger takes it. It is never dropped by the
-time; only a read showing the charger stopped, a start sent from Gladys or
-another charger at the address end it (another mode read is not taken for a
-start from elsewhere: the stop never applied, nothing was started again). With refused
-credentials, or a write refused for the rights of the user (401/403 with a
-token just given), it is not sent with the same ones: it goes first as soon as
-other credentials are saved or **Test the connection** succeeds (a click of
-the stop also tries one login, at most once a minute). Another refusal of the
-write (HTTP 4xx: busy, conflict…) keeps it too, sent again every 5 minutes;
-only after 3 identical refusals in a row (counted from 1 again at each click
-of the stop) is it given up, which the status and the badge of the device
-then say until a read shows the charger stopped or a command leaves Gladys (a
-stop, or a start, a mode or a current allowed by the option; a click refused
-before anything is sent leaves the warning).
+When the stop is not applied — the charger cannot be reached, answers 429 or
+5xx to it, its certificate changed, or the credentials are refused — it is
+**kept** in `/data` and sent again on its own rhythm, every 30 seconds (after
+the wait a 429 asks for, 5 minutes at most), whatever the interval or a pause
+of the reads, until the charger takes it. It is never dropped by the time;
+only a read showing the charger stopped, a start sent from Gladys that the
+charger takes (answered 2xx or 5xx, or without an answer: it may have landed)
+or another charger at the address end it (a start the charger refuses, HTTP
+3xx, 4xx or 429, leaves the stop kept as it was; another mode read is not
+taken for a start from elsewhere: the stop never applied, nothing was started
+again). With refused credentials, or a write refused for the rights of the
+user (401/403 with a token just given), it is not sent with the same ones: it
+goes first as soon as other credentials are saved or **Test the connection**
+succeeds (a click of the stop also tries one login, at most once a minute).
+Another refusal of the write (HTTP 3xx or 4xx: busy, conflict, a redirect,
+never followed…) keeps it too, sent again every 5 minutes; only after 3
+identical refusals in a row (counted from 1 again at each click of the stop)
+is it given up, which the status and the badge of the device then say until a
+read shows the charger stopped, a new stop is sent or kept, or the charger
+takes a start, a mode or a current allowed by the option (a click refused
+before anything is sent, or a command the charger refuses, leaves the
+warning).
 
 To cancel a kept stop (to charge after all): start the charge or choose a
-mode from Gladys, with the option (the command is then written even when the
-charger already shows that mode, so that it ends the kept stop); or set the
+mode from Gladys, with the option, once the charger accepts it (the command
+is then written even when the charger already shows that mode, so that it
+ends the kept stop; refused, it leaves the stop kept); or set the
 mode "Charge stop" in the SMA app and wait until Gladys reads it (the status
 no longer mentions the kept stop), then choose the mode you want there; or
 save another address. Otherwise it waits: it is never dropped with time.
@@ -171,7 +176,7 @@ A command the charger accepted is confirmed by a read right after it: the
 value asked read back is a success; the value before still read is "not
 applied yet" (checked again 5 and 20 seconds later); a command that may have
 reached the charger without an answer is "sent, without confirmation". The
-charger refusing the command (4xx) says so.
+charger refusing the command (3xx, 4xx) says so.
 
 ## Energy
 

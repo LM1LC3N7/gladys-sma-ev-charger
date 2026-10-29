@@ -262,7 +262,8 @@ function statusError(response, { token = false, write = false } = {}) {
     // With a token: no right to it (or the token expired), never a refused password.
     return new ChargerError(ERROR_KINDS.FORBIDDEN, `HTTP ${status}`, { status });
   }
-  if (write && status >= 400 && status < 500) {
+  if (write && status >= 300 && status < 500) {
+    // A redirect (never followed) or a 4xx: the charger did not take the write.
     return new ChargerError(ERROR_KINDS.REJECTED, `HTTP ${status}`, { status });
   }
   return new ChargerError(ERROR_KINDS.HTTP, `HTTP ${status}`, { status });

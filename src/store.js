@@ -13,7 +13,7 @@
 //     plus the one last refused, for "Trust the new certificate";
 //   - a stop not applied yet (sent again on its own timer), a stop given
 //     up after 3 identical refusals (said until a read shows the charger
-//     stopped or a write leaves), the watch of a stop sent, the minute
+//     stopped or the charger takes a write), the watch of a stop sent, the minute
 //     between two changes and the watch of a start left without
 //     confirmation;
 //   - the guard of the energy index (its reference and a value held back).
@@ -205,7 +205,7 @@ export function fromDisk(raw, { mono, now, session }) {
   const stop = plain(data.pendingStop) ? data.pendingStop : undefined;
   // A stop clicked "in the future" (a wall clock set back) is not valid:
   // dropped. Never dropped for its age: only a read showing it stopped, a
-  // start that left Gladys or another charger end it (src/app.js). The
+  // start the charger took or another charger end it (src/app.js). The
   // fields of older files (`from`, `changedReads`, `sent`) are ignored.
   const count = (v) => (Number.isInteger(v) && v >= 0 ? Math.min(v, 1000) : 0);
   if (

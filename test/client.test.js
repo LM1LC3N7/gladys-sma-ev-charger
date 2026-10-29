@@ -17,6 +17,7 @@ import {
   parseParameters,
   retryAfterOf,
   serialOf,
+  SmaClient,
 } from '../src/sma/client.js';
 import { ERROR_KINDS } from '../src/sma/http.js';
 
@@ -116,4 +117,23 @@ test('Retry-After: seconds, or a date against the Date header of the answer only
     }),
     300_000,
   );
+});
+
+test('a write answered 3xx (never followed) or 4xx is refused; 429 asks to wait; 5xx is unknown', async () => {
+  const kinds = {};
+  for (const status of [302, 409, 429, 503]) {
+    const client = new SmaClient({ exchange: async () => ({ status, headers: {}, body: '' }) });
+    const err = await client
+      .write({ address: { host: 'h', port: 443 } }, 't', 'Parameter.Chrg.ActChaMod', '4718', {
+        timestamp: '2026-10-28T10:00:00.000Z',
+      })
+      .catch((e) => e);
+    kinds[status] = err.kind;
+  }
+  assert.deepEqual(kinds, {
+    302: ERROR_KINDS.REJECTED,
+    409: ERROR_KINDS.REJECTED,
+    429: ERROR_KINDS.RATE_LIMITED,
+    503: ERROR_KINDS.HTTP,
+  });
 });
